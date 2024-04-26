@@ -145,3 +145,6 @@ fabric.properties
 *.output
 *.result
 *.lds.s
+*.bin
+*.dsk
+results
