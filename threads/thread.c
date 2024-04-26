@@ -40,6 +40,9 @@ static struct lock tid_lock;
 /* Thread destruction requests */
 static struct list destruction_req;
 
+/* [eunsik-kim] memory ticks for timer_sleep */
+static struct list ticks_list;
+
 /* Statistics. */
 static long long idle_ticks;    /* # of timer ticks spent idle. */
 static long long kernel_ticks;  /* # of timer ticks in kernel threads. */
@@ -105,10 +108,11 @@ thread_init (void) {
 	};
 	lgdt (&gdt_ds);
 
-	/* Init the globla thread context */
+	/* Init the global thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	list_init (&destruction_req);
+	list_init (&ticks_list);
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -587,4 +591,34 @@ allocate_tid (void) {
 	lock_release (&tid_lock);
 
 	return tid;
+}
+
+/* [eunsik-kim] timer_sleep에 사용될 ticks 횟수를 ticks_list에 오름차순을로 기록하는 함수 */
+void record_sleeptick(int64_t ticks) 
+{	
+	struct thread *t = thread_current();
+	t->ticks_cnt = ticks;
+	// 오름차순 찾기
+	struct list_elem *start_elem = list_head(&ticks_list);
+	do {
+		start_elem = list_next(start_elem);
+	} while ((start_elem != list_tail(&ticks_list)) && 
+			(list_entry(start_elem, struct thread, sleep_elem)->ticks_cnt < ticks));
+	list_insert(start_elem, &t->sleep_elem);
+}
+
+/* [eunsik-kim] 매 tick마다 sleep에 의해 block된 thread들을 찾아서 unblock */ 
+void thread_wake(int64_t ticks)
+{	
+	struct list_elem *start_elem = list_head(&ticks_list);
+	struct thread *sleep_thread;
+	while ((start_elem = list_next(start_elem)) != list_tail(&ticks_list)){
+		sleep_thread = list_entry(start_elem, struct thread, sleep_elem);
+		// over recored_ticks 
+		if (sleep_thread->ticks_cnt <= ticks){
+			thread_unblock(sleep_thread);
+			list_remove(start_elem);
+		} else 
+			break;
+	}
 }

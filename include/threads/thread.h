@@ -107,6 +107,8 @@ struct thread {
 	/* Owned by thread.c. */
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
+	struct list_elem sleep_elem;        /* [eunsik-kim] List element for timer_sleep */
+	int64_t ticks_cnt;					/* [eunsik-kim] memory ticks for timer_sleep */
 };
 
 /* If false (default), use round-robin scheduler.
@@ -142,5 +144,9 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
+
+/* [eunsik-kim] for alaram-multiple */
+void record_sleeptick(int64_t ticks);
+void thread_wake(int64_t ticks);
 
 #endif /* threads/thread.h */
