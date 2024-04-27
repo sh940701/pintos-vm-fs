@@ -92,6 +92,7 @@ struct thread {
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
 
+	int64_t wakeup_ticks;				// 일어날 시각 추가
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
@@ -125,6 +126,13 @@ tid_t thread_create (const char *name, int priority, thread_func *, void *);
 
 void thread_block (void);
 void thread_unblock (struct thread *);
+
+/* [jaeyoon] */
+void thread_sleep(int64_t ticks);
+/* [jaeyoon] */
+bool cmp_thread_ticks(const struct list_elem *a, const struct list_elem *b, void *aux);
+/* [jaeyoon] */
+void thread_wakeup (int64_t global_ticks);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);
