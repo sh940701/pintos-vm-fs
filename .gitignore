@@ -147,4 +147,7 @@ fabric.properties
 *.lds.s
 *.bin
 *.dsk
+*.txt
+*.log
+
 results
