@@ -248,10 +248,7 @@ thread_unblock (struct thread *t) {
 	ASSERT (t->status == THREAD_BLOCKED);
 	t->status = THREAD_READY;
 	/* 우선순위 크기순으로 내림차순정렬 */
-	if (t->priority > thread_current()->priority) 
-		list_push_front(&ready_list, &t->elem);
-	else
-		list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
+	list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
 	intr_set_level (old_level);
 }
 
