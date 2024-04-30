@@ -5,6 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h" 				/* for priority lock */
+
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -27,6 +29,7 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+#define MAX_DONATION_LEVEL 8			/* for chain donation_priority */
 
 /* A kernel thread or user process.
  *
@@ -105,11 +108,29 @@ struct thread {
 #endif
 
 	/* Owned by thread.c. */
-	struct intr_frame tf;               /* Information for switching */
-	unsigned magic;                     /* Detects stack overflow. */
-	struct list_elem sleep_elem;        /* [eunsik-kim] List element for timer_sleep */
-	int64_t ticks_cnt;					/* [eunsik-kim] memory ticks for timer_sleep */
+	struct intr_frame tf;               		/* Information for switching */
+	struct list_elem sleep_elem;        		/* List element for timer_sleep */
+	int64_t ticks_cnt;							/* memory ticks for timer_sleep */
+	int saved_priority[MAX_DONATION_LEVEL];			/* donation_withdraw을 할 때 저장한 priority를 불러오기 위해 */
+	struct lock *saved_lock[MAX_DONATION_LEVEL];	/* 각 lock 별로 한번씩만 priority donation을 하기 위해(중복 체크용) */
+	int nested_depth;							/* priority donation 횟수를 기록 */
+	struct thread *beneficiary_list[MAX_DONATION_LEVEL];		/* priority donation한 목록을 기억 */
+	int donation_list[MAX_DONATION_LEVEL];		/* donation한 priority 값을 기억 */
+	int donation_depth;							/* donation한 횟수를 기억 */
+	struct lock *blocked_lock;					/* priortiy donation chain할 때 재귀적으로 탐색하기 위해 */
+	unsigned magic;                     		/* Detects stack overflow. */
 };
+/* for alaram-multiple */
+void record_sleeptick(int64_t ticks);
+void thread_wake(int64_t ticks);
+
+/* for priority scheduling */
+typedef enum {READY_LIST, WAIT_LIST, COND_LIST} typelist;
+bool priority_larger (const struct list_elem *insert_elem, const struct list_elem *cmp_elem, typelist type);
+void thread_readylist_reorder (struct thread *lock_t);
+
+// for debugging
+void print_readylist(int loop);
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -144,9 +165,5 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
-
-/* [eunsik-kim] for alaram-multiple */
-void record_sleeptick(int64_t ticks);
-void thread_wake(int64_t ticks);
 
 #endif /* threads/thread.h */

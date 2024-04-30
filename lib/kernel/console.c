@@ -117,7 +117,7 @@ console_locked_by_current_thread (void) {
 int
 vprintf (const char *format, va_list args) {
 	int char_cnt = 0;
-
+	
 	acquire_console ();
 	__vprintf (format, args, vprintf_helper, &char_cnt);
 	release_console ();

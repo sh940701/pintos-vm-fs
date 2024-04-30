@@ -22,6 +22,13 @@ struct lock {
 	struct semaphore semaphore; /* Binary semaphore controlling access. */
 };
 
+/* One semaphore in a list. */
+struct semaphore_elem {
+	struct list_elem elem;              /* List element. */
+	struct semaphore semaphore;         /* This semaphore. */
+};
+
+
 void lock_init (struct lock *);
 void lock_acquire (struct lock *);
 bool lock_try_acquire (struct lock *);
@@ -44,5 +51,14 @@ void cond_broadcast (struct condition *, struct lock *);
  * optimization barrier.  See "Optimization Barriers" in the
  * reference guide for more information.*/
 #define barrier() asm volatile ("" : : : "memory")
+
+// priority scheduling
+void priority_donation(struct lock *lock, struct thread *donator);
+void donation_withdraw(struct thread *donator);
+void thread_reschedule(struct thread* t);
+
+// for debugging
+void print_list(struct list *ls, int id);
+void printf_locks(struct lock *locks);
 
 #endif /* threads/synch.h */

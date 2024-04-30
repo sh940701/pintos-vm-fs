@@ -40,7 +40,7 @@ static struct lock tid_lock;
 /* Thread destruction requests */
 static struct list destruction_req;
 
-/* [eunsik-kim] memory ticks for timer_sleep */
+/* memory ticks for timer_sleep */
 static struct list ticks_list;
 
 /* Statistics. */
@@ -209,7 +209,9 @@ thread_create (const char *name, int priority,
 	t->tf.eflags = FLAG_IF;
 
 	/* Add to run queue. */
-	thread_unblock (t);
+	thread_unblock(t);
+	if (list_entry(list_begin(&ready_list), struct thread, elem)->priority > thread_current()->priority)
+		thread_yield();			// 새롭게 생성한 thread의 우선순위가 높은경우 양보
 
 	return tid;
 }
@@ -244,8 +246,12 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
 	t->status = THREAD_READY;
+	/* 우선순위 크기순으로 내림차순정렬 */
+	if (t->priority >= thread_current()->priority) 
+		list_push_front(&ready_list, &t->elem);
+	else
+		list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
 	intr_set_level (old_level);
 }
 
@@ -307,15 +313,52 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		list_insert_ordered(&ready_list, &curr->elem, priority_larger, READY_LIST);	 /* 우선순위 크기 순으로 내림차순정렬 */
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* list_insert_order에 사용되는 우선순위 크기 비교함수 */
+bool
+priority_larger (const struct list_elem *insert_elem, const struct list_elem *cmp_elem,
+            typelist type) 
+{	
+	struct thread *t, *cmp_t;
+	if ((type == WAIT_LIST) || (type == READY_LIST)){
+		t = list_entry(insert_elem, struct thread, elem);
+		cmp_t = list_entry(cmp_elem, struct thread, elem);	
+	} else if (type == COND_LIST) {
+		t = thread_current();
+		struct semaphore cmp = list_entry(cmp_elem, struct semaphore_elem, elem)->semaphore;
+		cmp_t = list_entry(list_begin(&cmp.waiters), struct thread, elem);
+	}
+	return t->priority > cmp_t->priority;
+}
+/* ready list에 있는 thread의 순서를 재정렬 */
+void thread_readylist_reorder (struct thread *t){
+	ASSERT(t->status == THREAD_READY);
+
+	enum intr_level old_level;
+	old_level = intr_disable();
+	list_remove(&t->elem);
+	list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
+	intr_set_level(old_level);
+}
+
+/* 우선순위 재 설정 후 높은 우선순위가 있다면 양보 */
 void
-thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+thread_set_priority(int new_priority) {
+	struct thread *curr = thread_current();
+	if (curr->nested_depth == -1)
+		curr->priority = new_priority;
+	else // donated된 경우는 저장된 값을 내림
+		curr->saved_priority[0] = new_priority;
+
+	if (!list_empty(&ready_list)) {
+		struct thread *top_t = list_entry(list_begin(&ready_list), struct thread, elem);
+		if (top_t->priority > new_priority)
+			thread_yield();			
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -370,6 +413,7 @@ idle (void *idle_started_ UNUSED) {
 	for (;;) {
 		/* Let someone else run. */
 		intr_disable ();
+		thread_wake(timer_ticks());
 		thread_block ();
 
 		/* Re-enable interrupts and wait for the next one.
@@ -412,6 +456,9 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
+	t->nested_depth = -1;							/* checking depth during priority donation */
+	t->donation_depth = -1;							/* checking depth when collecting return of donation */
+	t->blocked_lock = NULL;							/* the lock blocking the thread */
 	t->magic = THREAD_MAGIC;
 }
 
@@ -593,7 +640,7 @@ allocate_tid (void) {
 	return tid;
 }
 
-/* [eunsik-kim] timer_sleep에 사용될 ticks 횟수를 ticks_list에 오름차순을로 기록하는 함수 */
+/* timer_sleep에 사용될 ticks 횟수를 ticks_list에 오름차순을로 기록하는 함수 */
 void record_sleeptick(int64_t ticks) 
 {	
 	struct thread *t = thread_current();
@@ -607,18 +654,27 @@ void record_sleeptick(int64_t ticks)
 	list_insert(start_elem, &t->sleep_elem);
 }
 
-/* [eunsik-kim] 매 tick마다 sleep에 의해 block된 thread들을 찾아서 unblock */ 
+/* 매 tick마다 sleep에 의해 block된 thread들을 찾아서 unblock */ 
 void thread_wake(int64_t ticks)
 {	
 	struct list_elem *start_elem = list_head(&ticks_list);
-	struct thread *sleep_thread;
+	struct thread *sleeping_thread;
 	while ((start_elem = list_next(start_elem)) != list_tail(&ticks_list)){
-		sleep_thread = list_entry(start_elem, struct thread, sleep_elem);
+		sleeping_thread = list_entry(start_elem, struct thread, sleep_elem);
 		// over recored_ticks 
-		if (sleep_thread->ticks_cnt <= ticks){
-			thread_unblock(sleep_thread);
+		if (sleeping_thread->ticks_cnt <= ticks){
 			list_remove(start_elem);
+			thread_unblock(sleeping_thread);
 		} else 
 			break;
 	}
+}
+
+/* debbuging  */ 
+void print_readylist(int loop)
+{	
+	printf("========================= ready list start =========================\n");
+	print_list(&ready_list, loop);
+	printf("========================== ready list end ==========================\n");
+	
 }

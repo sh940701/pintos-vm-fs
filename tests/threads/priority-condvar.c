@@ -31,6 +31,7 @@ test_priority_condvar (void)
       char name[16];
       snprintf (name, sizeof name, "priority %d", priority);
       thread_create (name, priority, priority_condvar_thread, NULL);
+      //printf_cond(&condition);
     }
 
   for (i = 0; i < 10; i++) 
@@ -39,6 +40,7 @@ test_priority_condvar (void)
       msg ("Signaling...");
       cond_signal (&condition, &lock);
       lock_release (&lock);
+      //printf_cond(&condition);
     }
 }
 
@@ -49,5 +51,12 @@ priority_condvar_thread (void *aux UNUSED)
   lock_acquire (&lock);
   cond_wait (&condition, &lock);
   msg ("Thread %s woke up.", thread_name ());
+  //print_readylist(0);
   lock_release (&lock);
+}
+
+void printf_cond(struct condition *condition){
+  printf("========================== cond list start =========================\n");
+  print_list(&condition->waiters, 0);
+  printf("========================== cond list end =========================\n");
 }
