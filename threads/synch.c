@@ -201,7 +201,8 @@ lock_acquire (struct lock *lock) {
 		return;	
 	struct thread *donator = thread_current();
 	donator->blocked_lock = lock;
-	priority_donation(lock, donator);		
+	if ((!thread_mlfqs) && (donator->donation_depth < MAX_DONATION_LEVEL)) 	// mlqs에는 donate가 없음
+		priority_donation(lock, donator);		
 
 	sema_down(&lock->semaphore);
 	lock->holder = thread_current ();
@@ -211,8 +212,8 @@ lock_acquire (struct lock *lock) {
 		donation_withdraw(donator);
 		donator->donation_depth = -1;
 	}
-
 }
+
 /* 현재 blocked holder의 우선순위가 낮다면 priority donation이 발생함 */
 void priority_donation(struct lock *lock, struct thread *donator)
 {	
@@ -222,14 +223,15 @@ void priority_donation(struct lock *lock, struct thread *donator)
 		int idx;	// 같은 lock에 대해 donation한 save priority를 찾아 지움
 		for (idx =0; idx<=beneficiary->nested_depth; idx++)
 			if (lock == beneficiary->saved_lock[idx]) {
-				beneficiary->priority = beneficiary->saved_priority[idx];	// origin priority 값을 다시 불러옴
+				if (idx == beneficiary->nested_depth)
+					beneficiary->priority = beneficiary->saved_priority[idx];	// origin priority 값을 다시 불러옴
 				for (; idx < beneficiary->nested_depth; idx++) {
-					beneficiary->saved_priority[idx] = beneficiary->saved_priority[idx+1];
+					beneficiary->saved_priority[idx+1] = beneficiary->saved_priority[idx+2];
 					beneficiary->saved_lock[idx] = beneficiary->saved_lock[idx+1];
 				}
 				beneficiary->nested_depth--;
 				break;
-			}
+			} 
 		beneficiary->saved_priority[++beneficiary->nested_depth] = beneficiary->priority;	 // 기부 받기전 우선순위 저장
 		beneficiary->saved_lock[beneficiary->nested_depth] = lock;					// 기부 받은 lock 저장
 		donator->beneficiary_list[++donator->donation_depth] = beneficiary;			// donation return을 위해 후원자 목록 저장
@@ -258,18 +260,19 @@ void priority_donation(struct lock *lock, struct thread *donator)
 /* thread의 각 ready list or block list에서 우선순위 변경으로 인한 list 순서만 정렬(thread unblock과 다름) */
 void thread_reschedule(struct thread* t)
 {
-	if (t->status == THREAD_BLOCKED){
+	if ((t->status == THREAD_BLOCKED) && (t->blocked_lock != NULL)){
 		enum intr_level old_level;
 		old_level = intr_disable();
 		list_remove(&t->elem);
 		list_insert_ordered(&t->blocked_lock->semaphore.waiters, &t->elem, priority_larger, WAIT_LIST);
 		intr_set_level(old_level);
-	}
-	else if (t->status == THREAD_READY)
+	} else if (t->status == THREAD_READY)
 		thread_readylist_reorder(t);
 }
 
-/* 자기가 기부한 beneficiary_list의 thread의 priority를 회수 */
+/* 자기가 기부한 beneficiary_list의 thread의 priority를 회수 
+ * (value가 유일한 beneficiary를 결정하는 id가 아니므로 잘못 회수될 발생가능성 존재) 
+ */
 void donation_withdraw(struct thread *donator)
 {	
 	for (int depth = 0; depth <= donator->donation_depth; depth++) {
@@ -280,18 +283,18 @@ void donation_withdraw(struct thread *donator)
 			// 각 상태의 list에서 내림차순 재정렬
 			thread_reschedule(beneficiary);
 		}
-		else {	// 저장된 priority목록 에서 삭제하는 경우
+		else {	// 저장된 priority목록 에서 삭제하는 경우(del list[list.index(val)])
 			int idx;
 			for (idx = 1; idx <= beneficiary->nested_depth; idx++)
 				if (beneficiary->saved_priority[idx] == donator->donation_list[depth]){
 					// pop한 빈칸 당겨서 매우기
-				for (; idx < beneficiary->nested_depth; idx++){
-					beneficiary->saved_priority[idx] = beneficiary->saved_priority[idx+1];
-					beneficiary->saved_lock[idx] = beneficiary->saved_lock[idx+1];
+					for (; idx < beneficiary->nested_depth; idx++){
+						beneficiary->saved_priority[idx] = beneficiary->saved_priority[idx+1];
+						beneficiary->saved_lock[idx-1] = beneficiary->saved_lock[idx];
+					}
+					beneficiary->nested_depth--;
+					break;
 				}
-				beneficiary->nested_depth--;
-				break;
-			}
 		}
 	}
 }
@@ -431,7 +434,7 @@ void print_list(struct list *ls, int id)
 	printf("--------id: %d ------- entry start ---------------------\n", id);
 	while ((start_elem = list_next(start_elem)) != list_tail(ls)){
 		t = list_entry(start_elem, struct thread, elem);
-		printf("%d : %s priority %d \n", ++i, t->name, t->priority);
+		printf("%d : %s priority %d, status %d \n", ++i, t->name, t->priority, t->status);
 	}
 	printf("---------------------- entry end ---------------------\n");
 }

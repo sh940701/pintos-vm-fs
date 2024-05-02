@@ -149,7 +149,11 @@ load_thread (void *aux UNUSED)
 
   thread_set_nice (20);
   timer_sleep (sleep_time - timer_elapsed (start_time));
-  while (timer_elapsed (start_time) < spin_time)
+  while (timer_elapsed (start_time) < spin_time){
+    // if (timer_elapsed (start_time) % TIMER_FREQ == 0)
+    //   print_sleeplist();
     continue;
+  }
+    
   timer_sleep (exit_time - timer_elapsed (start_time));
 }

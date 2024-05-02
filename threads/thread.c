@@ -41,7 +41,7 @@ static struct lock tid_lock;
 static struct list destruction_req;
 
 /* memory ticks for timer_sleep */
-static struct list ticks_list;
+static struct list sleep_list;
 
 /* Statistics. */
 static long long idle_ticks;    /* # of timer ticks spent idle. */
@@ -51,6 +51,16 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 /* Scheduling. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
+
+/* advanced scheduler */
+#define TIMER_FREQ 100
+static int load_avg = 0;
+static struct list thread_list;
+static struct list ch_prior_list;
+
+/* p.q float number */
+int f = (1<<14);
+
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -112,13 +122,18 @@ thread_init (void) {
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	list_init (&destruction_req);
-	list_init (&ticks_list);
+	list_init (&sleep_list);
+	list_init(&thread_list);
+	list_init(&ch_prior_list);
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
 	init_thread (initial_thread, "main", PRI_DEFAULT);
 	initial_thread->status = THREAD_RUNNING;
 	initial_thread->tid = allocate_tid ();
+	if (thread_mlfqs){
+		mlfq_cal_priority(initial_thread);
+	}
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -150,13 +165,67 @@ thread_tick (void) {
 	else if (t->pml4 != NULL)
 		user_ticks++;
 #endif
-	else
+	else{
 		kernel_ticks++;
+	}
+
+	if (thread_mlfqs)
+		mlfq_scheduler(t);
+
+	thread_wake(timer_ticks());
 
 	/* Enforce preemption. */
 	if (++thread_ticks >= TIME_SLICE)
 		intr_yield_on_return ();
+
 }
+
+void mlfq_scheduler(struct thread *t)
+{
+	enum intr_level old_level;
+	struct thread *tar_t;
+	struct list_elem *tar_elem;
+
+	old_level = intr_disable();	
+	int now_tick = timer_ticks();
+
+	if (t != idle_thread) {
+		t->recent_cpu += N_to_FP(1);
+		// 중복 제거하여 삽mlfq_scheduler입
+		tar_elem = list_head(&ch_prior_list);
+		while ((tar_elem = tar_elem->next) != &t->check_prior_elem)
+			if (tar_elem == &ch_prior_list.tail){
+				list_push_back(&ch_prior_list, &t->check_prior_elem);
+				break;
+		}
+	}
+
+	// TIMER_FREQ(100) 마다 전체 thread를 순회하며 recent_cpu와 load_avg 갱신
+	if (now_tick % TIMER_FREQ == 0){
+		thread_cal_load_avg();
+		tar_elem = list_head(&thread_list);
+		while ((tar_elem = tar_elem->next) != &thread_list.tail){
+			tar_t = list_entry(tar_elem, struct thread, thread_elem);
+			thread_cal_recent_cpu(tar_t);
+			if (t->status == THREAD_BLOCKED)
+				thread_reschedule(tar_t);
+		}
+		list_sort(&ready_list, priority_larger, READY_LIST);
+	}
+	
+	// 4 tick 마다 recent_cpu가 갱신된 thread만 우선순위 갱신
+	if (now_tick % 4 == 0) {
+		while (!list_empty(&ch_prior_list)) {
+			tar_elem = list_pop_front(&ch_prior_list);
+			tar_t = list_entry(tar_elem, struct thread, check_prior_elem);
+			mlfq_cal_priority(tar_t);
+			thread_reschedule(tar_t);
+		} 
+		list_init(&ch_prior_list);	
+	}	
+	intr_set_level(old_level);
+}
+
 
 /* Prints thread statistics. */
 void
@@ -208,8 +277,16 @@ thread_create (const char *name, int priority,
 	t->tf.cs = SEL_KCSEG;
 	t->tf.eflags = FLAG_IF;
 
+	if (thread_mlfqs){
+		t->nice = thread_current()->nice;
+		t->recent_cpu = thread_current()->recent_cpu;
+		mlfq_cal_priority(t);
+	}
+
 	/* Add to run queue. */
-	thread_unblock(t);
+	if (t != idle_thread)
+		thread_unblock(t);
+
 	if (list_entry(list_begin(&ready_list), struct thread, elem)->priority > thread_current()->priority)
 		thread_yield();			// 새롭게 생성한 thread의 우선순위가 높은경우 양보
 
@@ -328,6 +405,10 @@ priority_larger (const struct list_elem *insert_elem, const struct list_elem *cm
 		t = thread_current();
 		struct semaphore cmp = list_entry(cmp_elem, struct semaphore_elem, elem)->semaphore;
 		cmp_t = list_entry(list_begin(&cmp.waiters), struct thread, elem);
+	} else if (type == SLEEP_LIST) {
+		t = list_entry(insert_elem, struct thread, sleep_elem);
+		cmp_t = list_entry(cmp_elem, struct thread, sleep_elem);
+		return t->ticks_cnt < cmp_t->ticks_cnt;
 	}
 	return t->priority > cmp_t->priority;
 }
@@ -342,15 +423,36 @@ void thread_readylist_reorder (struct thread *t){
 	intr_set_level(old_level);
 }
 
-/* 우선순위 재 설정 후 높은 우선순위가 있다면 양보 */
+/* 우선순위 재설정 후 높은 우선순위가 있다면 양보 */
 void
 thread_set_priority(int new_priority) {
+	enum intr_level old_level;
+	old_level = intr_disable();	
 	struct thread *curr = thread_current();
-	if (curr->nested_depth == -1)
+	if (thread_mlfqs)
+		curr->priority = new_priority;	
+	else if (curr->nested_depth == -1)
 		curr->priority = new_priority;
-	else // donated된 경우는 저장된 값을 내림
+	else if (curr->priority < new_priority) { // donation받은 값들 전부 제거
+		curr->priority = new_priority;
+		curr->nested_depth = -1;
+	}
+	else // 새롭게 설정된 priority 값보다 낮게 기부 받은 값은 전부 삭제
+	{	
+		int idx;
 		curr->saved_priority[0] = new_priority;
-
+		for (idx = 1; idx <= curr->nested_depth; idx++)
+			if (curr->saved_priority[idx] > new_priority){
+				// pop한 빈칸 당겨서 매우기
+				for (int sidx = idx; sidx <= curr->nested_depth; sidx++) {
+					curr->saved_priority[sidx-idx+1] = curr->saved_priority[sidx+1];
+					curr->saved_lock[sidx-idx] = curr->saved_lock[sidx-1];
+				}
+				curr->nested_depth -= idx-1;
+				break;
+			}
+	}
+	intr_set_level(old_level);	
 	if (!list_empty(&ready_list)) {
 		struct thread *top_t = list_entry(list_begin(&ready_list), struct thread, elem);
 		if (top_t->priority > new_priority)
@@ -367,28 +469,49 @@ thread_get_priority (void) {
 /* Sets the current thread's nice value to NICE. */
 void
 thread_set_nice (int nice UNUSED) {
-	/* TODO: Your implementation goes here */
+	ASSERT((-20 <= nice) && (nice <= 20));	
+	
+	thread_current()->nice = nice;
+	mlfq_cal_priority(thread_current());
+	if ((!list_empty(&ready_list)) && (thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority)) 
+		thread_yield();
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) {
-	/* TODO: Your implementation goes here */
-	return 0;
+	return thread_current()->nice;
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) {
-	/* TODO: Your implementation goes here */
-	return 0;
+	return X_NEAR_INT(MUL_X_N(load_avg, 100));
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) {
-	/* TODO: Your implementation goes here */
-	return 0;
+	return X_NEAR_INT(MUL_X_N(thread_current()->recent_cpu, 100));
+}
+
+/* calculate load_avg */
+void thread_cal_load_avg(void) {
+	int ready_threads = (thread_current() != idle_thread) ? 1 : 0;
+	ready_threads += list_size(&ready_list);
+	load_avg = ADD_X_Y(MUL_X_Y(DIV_X_N(N_to_FP(59), 60), load_avg), MUL_X_N(DIV_X_N(N_to_FP(1), 60), ready_threads));
+}
+
+/* calculate recent_cpu */
+void thread_cal_recent_cpu(struct thread *t) {
+	int recent_cpu = ADD_X_N(MUL_X_Y(DIV_X_Y(MUL_X_N(load_avg, 2), ADD_X_N(MUL_X_N(load_avg, 2), 1)), t->recent_cpu), t->nice);
+	t->recent_cpu = recent_cpu;
+}
+
+/* mlfq(4.4BSD scheduler)방법으로 현재시각 기준 계산 */
+void mlfq_cal_priority(struct thread *t) {	
+	int priority = X_TRUN_INT(ADD_X_N(ADD_X_N(-DIV_X_N(t->recent_cpu, 4), PRI_MAX), -t->nice*2));
+	t->priority = (priority > 63) ? 63 : ((priority < 0) ? 0 : priority);
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -410,7 +533,6 @@ idle (void *idle_started_ UNUSED) {
 	for (;;) {
 		/* Let someone else run. */
 		intr_disable ();
-		thread_wake(timer_ticks());
 		thread_block ();
 
 		/* Re-enable interrupts and wait for the next one.
@@ -456,6 +578,11 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->nested_depth = -1;							/* checking depth during priority donation */
 	t->donation_depth = -1;							/* checking depth when collecting return of donation */
 	t->blocked_lock = NULL;							/* the lock blocking the thread */
+	t->ticks_cnt = 0;
+	t->nice = 0;
+	t->recent_cpu = 0;
+	if (thread_mlfqs)
+		list_push_back(&thread_list, &t->thread_elem);
 	t->magic = THREAD_MAGIC;
 }
 
@@ -616,8 +743,13 @@ schedule (void) {
 		if (curr && curr->status == THREAD_DYING && curr != initial_thread) {
 			ASSERT (curr != next);
 			list_push_back (&destruction_req, &curr->elem);
+			if (thread_mlfqs){
+				list_remove(&curr->thread_elem);
+				list_remove(&curr->elem);
+				list_remove(&curr->sleep_elem);
+				list_remove(&curr->check_prior_elem);
+			}
 		}
-
 		/* Before switching the thread, we first save the information
 		 * of current running. */
 		thread_launch (next);
@@ -642,21 +774,16 @@ void record_sleeptick(int64_t ticks)
 {	
 	struct thread *t = thread_current();
 	t->ticks_cnt = ticks;
-	// 오름차순 찾기
-	struct list_elem *start_elem = list_head(&ticks_list);
-	do {
-		start_elem = list_next(start_elem);
-	} while ((start_elem != list_tail(&ticks_list)) && 
-			(list_entry(start_elem, struct thread, sleep_elem)->ticks_cnt < ticks));
-	list_insert(start_elem, &t->sleep_elem);
+	list_insert_ordered(&sleep_list, &t->sleep_elem, priority_larger, SLEEP_LIST);
+	thread_block();
 }
 
 /* 매 tick마다 sleep에 의해 block된 thread들을 찾아서 unblock */ 
 void thread_wake(int64_t ticks)
 {	
-	struct list_elem *start_elem = list_head(&ticks_list);
+	struct list_elem *start_elem = list_head(&sleep_list);
 	struct thread *sleeping_thread;
-	while ((start_elem = list_next(start_elem)) != list_tail(&ticks_list)){
+	while ((start_elem = list_next(start_elem)) != list_tail(&sleep_list)){
 		sleeping_thread = list_entry(start_elem, struct thread, sleep_elem);
 		// over recored_ticks 
 		if (sleeping_thread->ticks_cnt <= ticks){
@@ -667,11 +794,17 @@ void thread_wake(int64_t ticks)
 	}
 }
 
-/* debbuging  */ 
+/* debbuging */ 
 void print_readylist(int loop)
 {	
 	printf("========================= ready list start =========================\n");
 	print_list(&ready_list, loop);
 	printf("========================== ready list end ==========================\n");
-	
+}
+
+void print_sleeplist(int loop)
+{	
+	printf("========================= sleep list start =========================\n");
+	print_list(&sleep_list, loop);
+	printf("========================== sleep list end ==========================\n");
 }

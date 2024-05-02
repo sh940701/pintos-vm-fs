@@ -91,10 +91,9 @@ timer_elapsed (int64_t then) {
 void
 timer_sleep (int64_t sleepticks) {
 	ASSERT (intr_get_level () == INTR_ON);
-	/* [eunsik-kim]	thread block 하여 idle로 하여금 다시 unblock하게함 */ 
+	/* thread block 하여 idle로 하여금 다시 unblock하게함 */ 
 	enum intr_level old_level = intr_disable();	
 	record_sleeptick(ticks + sleepticks);
-	thread_block();
 	intr_set_level(old_level);
 }
 

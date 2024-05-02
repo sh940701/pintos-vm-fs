@@ -109,8 +109,10 @@ struct thread {
 
 	/* Owned by thread.c. */
 	struct intr_frame tf;               		/* Information for switching */
+	/* Alarm Clock */
 	struct list_elem sleep_elem;        		/* List element for timer_sleep */
 	int64_t ticks_cnt;							/* memory ticks for timer_sleep */
+	/* Priority scheduling */
 	int saved_priority[MAX_DONATION_LEVEL];			/* donation_withdraw을 할 때 저장한 priority를 불러오기 위해 */
 	struct lock *saved_lock[MAX_DONATION_LEVEL];	/* 각 lock 별로 한번씩만 priority donation을 하기 위해(중복 체크용) */
 	int nested_depth;							/* priority donation 횟수를 기록 */
@@ -118,19 +120,45 @@ struct thread {
 	int donation_list[MAX_DONATION_LEVEL];		/* donation한 priority 값을 기억 */
 	int donation_depth;							/* donation한 횟수를 기억 */
 	struct lock *blocked_lock;					/* priortiy donation chain할 때 재귀적으로 탐색하기 위해 */
+	/* Advanced Scheduler */
+	int nice;
+	int recent_cpu;
+	struct list_elem thread_elem;        		
+	struct list_elem check_prior_elem;        	
 	unsigned magic;                     		/* Detects stack overflow. */
 };
+
 /* for alaram-multiple */
 void record_sleeptick(int64_t ticks);
 void thread_wake(int64_t ticks);
 
 /* for priority scheduling */
-typedef enum {READY_LIST, WAIT_LIST, COND_LIST} typelist;
+typedef enum {READY_LIST, WAIT_LIST, COND_LIST, SLEEP_LIST} typelist;
 bool priority_larger (const struct list_elem *insert_elem, const struct list_elem *cmp_elem, typelist type);
 void thread_readylist_reorder (struct thread *lock_t);
 
-// for debugging
+/* for advanced scheduler */
+void mlfq_scheduler(struct thread *t);
+void mlfq_cal_priority(struct thread *t);
+void thread_cal_load_avg(void);
+void thread_cal_recent_cpu(struct thread *t);
+
+/* for debugging */ 
 void print_readylist(int loop);
+
+/* arithmetic cal */
+#define N_to_FP(n) ((n) * f)
+#define X_TRUN_INT(x) ((x) / f)
+#define X_NEAR_INT(x) (((x) >= 0) ? (((x) + (f/2)) / f) : (((x) - (f/2)) / f))
+#define ADD_X_Y(x, y) ((x) + (y))
+#define ADD_X_N(x, n) ((x) + ((n) * f))
+#define SUB_X_Y(x, y) ((x) - (y))
+#define SUB_X_N(x, n) ((x) - ((n) * f))
+#define MUL_X_Y(x, y) ((((int64_t) (x)) * (y)) / f)
+#define MUL_X_N(x, n) ((x) * (n))
+#define DIV_X_Y(x, y) ((((int64_t) (x)) * f) / (y))
+#define DIV_X_N(x, n) ((x) / (n))
+typedef enum {UNDONE, DONE} check;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.

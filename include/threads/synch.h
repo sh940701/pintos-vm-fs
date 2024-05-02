@@ -52,12 +52,12 @@ void cond_broadcast (struct condition *, struct lock *);
  * reference guide for more information.*/
 #define barrier() asm volatile ("" : : : "memory")
 
-// priority scheduling
+/* priority scheduling */
 void priority_donation(struct lock *lock, struct thread *donator);
 void donation_withdraw(struct thread *donator);
 void thread_reschedule(struct thread* t);
 
-// for debugging
+/* for debugging */ 
 void print_list(struct list *ls, int id);
 void printf_locks(struct lock *locks);
 
