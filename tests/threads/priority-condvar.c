@@ -24,7 +24,7 @@ test_priority_condvar (void)
   lock_init (&lock);
   cond_init (&condition);
 
-  thread_set_priority (PRI_MIN);
+  thread_set_priority (PRI_MIN); /* main thread의 priority를 0으로 설정 */
   for (i = 0; i < 10; i++) 
     {
       int priority = PRI_DEFAULT - (i + 7) % 10 - 1;

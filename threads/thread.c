@@ -509,6 +509,7 @@ next_thread_to_run (void) {
 }
 
 /* Use iretq to launch the thread */
+/* 새로운 스레드의 context를 레지스터에 저장 */
 void
 do_iret (struct intr_frame *tf) {
 	__asm __volatile(
@@ -531,8 +532,8 @@ do_iret (struct intr_frame *tf) {
 			"addq $120,%%rsp\n"
 			"movw 8(%%rsp),%%ds\n"
 			"movw (%%rsp),%%es\n"
-			"addq $32, %%rsp\n"
-			"iretq"
+			"addq $32, %%rsp\n"      // 다시 한 번 스택 포인터를 조정하여, iretq 명령어를 실행하기 전에 필요한 스택의 위치로 이동시킵니다. iretq는 'interrupt return'의 약자로, 이 명령어는 인터럽트 또는 예외가 처리된 후 초기 상태로 복귀하는데 사용됩니다.
+			"iretq"					 // 최종적으로 iretq 명령어를 실행하여, 이전 상태로 복귀합니다. 이 과정에는 코드 세그먼트 레지스터(CS), 인스트럭션 포인터(RIP), 그리고 프로그램 상태 레지스터(RFLAGS)가 스택에서 복원되어, 원래 실행하던 프로그램의 지점으로 정확히 돌아가 계속 실행될 수 있게 합니다.
 			: : "g" ((uint64_t) tf) : "memory");
 }
 
@@ -546,6 +547,7 @@ do_iret (struct intr_frame *tf) {
    It's not safe to call printf() until the thread switch is
    complete.  In practice that means that printf()s should be
    added at the end of the function. */
+/* 현재 스레드의 context를 스레드의 interrupt frame에 옮기는 작업 그리고 do_iret함수를 호출 register rdi에 tf포인터를 인자로 넘기며 */
 static void
 thread_launch (struct thread *th) {
 	uint64_t tf_cur = (uint64_t) &running_thread ()->tf;
@@ -559,12 +561,19 @@ thread_launch (struct thread *th) {
 	 * until switching is done. */
 	__asm __volatile (
 			/* Store registers that will be used. */
+			/* register rax, rbx, rcx의 값을 stack에 저장한다(다른값(tf_cut과 tf의 interrupt frame을 가리키는 포인터(8바이트)))으로 
+			채울것이기 때문에, 스택에 저장해놓는것) */
 			"push %%rax\n"
 			"push %%rbx\n"
 			"push %%rcx\n"
 			/* Fetch input once */
+			/* movq %0, %%rax : 첫 번째 입력(%0, 여기서는 tf_cur)을 rax 레지스터로 이동합니다.
+			   movq는 64비트 값을 이동하는 명령어로, 여기서는 tf_cur 포인터를 rax에 저장합니다.
+			   movq %1, %%rcx : 두 번째 입력(%1, 여기서는 tf)를 rcx 레지스터로 이동합니다. 
+			   이 작업도 포인터를 레지스터로 옮기는 작업입니다. */
 			"movq %0, %%rax\n"
 			"movq %1, %%rcx\n"
+			/* rax가 가키리는 주소값+x에 레지스터들의 값들을 저장한다.(tf_cur의 interrupt frame에 다음에 실행할때의 context를 저장) */
 			"movq %%r15, 0(%%rax)\n"
 			"movq %%r14, 8(%%rax)\n"
 			"movq %%r13, 16(%%rax)\n"
@@ -577,30 +586,35 @@ thread_launch (struct thread *th) {
 			"movq %%rdi, 72(%%rax)\n"
 			"movq %%rbp, 80(%%rax)\n"
 			"movq %%rdx, 88(%%rax)\n"
+			/* 스택에서 pop해서 register rbx에 저장(a, b, c순으로 넣었으므로 c가 나왔을것임) */
 			"pop %%rbx\n"              // Saved rcx
+			/* 원래 rcx에 있던값을 tf_cur의 interrupt frame에 저장 */
 			"movq %%rbx, 96(%%rax)\n"
 			"pop %%rbx\n"              // Saved rbx
 			"movq %%rbx, 104(%%rax)\n"
 			"pop %%rbx\n"              // Saved rax
 			"movq %%rbx, 112(%%rax)\n"
+			/* addq $120, %%rax: rax 레지스터의 값에 120을 더합니다. 
+			이는 rax가 가리키는 위치를 조정하여 특정 저장 공간(예: 인터럽트 프레임)에 접근하기 위한 준비 작업입니다. */
 			"addq $120, %%rax\n"
 			"movw %%es, (%%rax)\n"
 			"movw %%ds, 8(%%rax)\n"
 			"addq $32, %%rax\n"
+			/* 현재의 명령 포인터(rip) 값을 스택에 저장하고 __next 라벨로 점프합니다. 이는 rip 값을 얻기 위한 트릭입니다. */
 			"call __next\n"         // read the current rip.
-			"__next:\n"
-			"pop %%rbx\n"
-			"addq $(out_iret -  __next), %%rbx\n"
-			"movq %%rbx, 0(%%rax)\n" // rip
-			"movw %%cs, 8(%%rax)\n"  // cs
-			"pushfq\n"
-			"popq %%rbx\n"
+			"__next:\n" // rip 값을 얻는 목적지 라벨입니다.
+			"pop %%rbx\n" // 이전 명령(call __next)에 의해 스택에 저장되었던 rip 값을 rbx 레지스터로 가져옵니다.
+			"addq $(out_iret -  __next), %%rbx\n" // rbx의 값(현재 rip의 값)에 (out_iret - __next)를 더합니다. 이는 인터럽트 후에 실행을 계속할 위치를 계산하기 위함입니다.
+			"movq %%rbx, 0(%%rax)\n" // rip.  gpt의 설명 : 계산된 rip 값을 rax가 가리키는 위치에 저장합니다.
+			"movw %%cs, 8(%%rax)\n"  // cs.   gpt의 설명 : 코드 세그먼트 레지스터 cs의 값을 rax가 가리키는 위치로 부터 8바이트 떨어진 곳에 저장합니다.
+			"pushfq\n"				 // 플래그 레지스터의 현재 상태를 스택에 저장합니다.
+			"popq %%rbx\n"			 // 스택에서 플래그 레지스터 값을 꺼내어 rbx에 저장합니다.
 			"mov %%rbx, 16(%%rax)\n" // eflags
 			"mov %%rsp, 24(%%rax)\n" // rsp
-			"movw %%ss, 32(%%rax)\n"
-			"mov %%rcx, %%rdi\n"
-			"call do_iret\n"
-			"out_iret:\n"
+			"movw %%ss, 32(%%rax)\n" // 스택 세그먼트 레지스터 ss의 값을 rax가 가리키는 위치로부터 32바이트 떨어진 곳에 저장합니다.
+			"mov %%rcx, %%rdi\n"     // 변수 혹은 포인터를 함수 do_iret에 전달하기 위해 rcx의 값을 rdi에 복사합니다. x86_64 호출 규약에서 첫 번째 인자는 rdi를 통해 전달됩니다.
+			"call do_iret\n"         // do_iret 함수를 호출합니다. 이 함수는 인터럽트 후에 처리를 진행합니다.
+			"out_iret:\n"            // addq 명령에서 사용된 라벨로, rip 위치 계산에 필요합니다.
 			: : "g"(tf_cur), "g" (tf) : "memory"
 			);
 }

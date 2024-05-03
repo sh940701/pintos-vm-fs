@@ -424,6 +424,7 @@ list_insert_ordered (struct list *list, struct list_elem *elem,
 	ASSERT (elem != NULL);
 	ASSERT (less != NULL);
 
+	/* list_begin()은 list->head.next반환, list_end()는 list->tail반환 */
 	for (e = list_begin (list); e != list_end (list); e = list_next (e))
 		if (less (elem, e, aux))
 			break;

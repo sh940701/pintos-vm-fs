@@ -113,7 +113,7 @@ void sema_up(struct semaphore *sema)
    if (!list_empty(&sema->waiters))
    {
       // waiters에 들어있는 스레드가 donate를 받아 우선순위가 달라졌을 수 있기 때문에 재정렬
-      list_sort(&sema->waiters, cmp_thread_priority, NULL);
+      //list_sort(&sema->waiters, cmp_thread_priority, NULL);
       thread_unblock(list_entry(list_pop_front(&sema->waiters),
                                 struct thread, elem));
    }
@@ -373,7 +373,7 @@ void remove_donor(struct lock *lock)
     }
 }
 
-/* 이 함수가 호출된 lock_release함수에 인자로 주어진 lock에 걸린 스레드들이 donation한 값들 전의(?) 값으로 돌아간다. */
+/* current thread의 donation list중 첫번째 thread의 priority로 바꾼다.(list가 비었다면 init_priority로) */
 void update_priority_for_donations(void)
 {
     struct thread *curr = thread_current();

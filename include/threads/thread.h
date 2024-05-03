@@ -95,6 +95,12 @@ struct thread {
 	int64_t wakeup_ticks;				// 일어날 시각 추가
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
+	
+	/* [jaeyoon] for donation */
+	int init_priority;
+    struct lock *wait_on_lock;
+    struct list donations;				/* 이 스레드한테 도네이션 한 스레드들 목록 */
+    struct list_elem donation_elem;		/* 다른 스레드한테 도네이션 했을때, 다른 스레드의 donations list에 들어갈 list_elem */
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -132,7 +138,21 @@ void thread_sleep(int64_t ticks);
 /* [jaeyoon] */
 bool cmp_thread_ticks(const struct list_elem *a, const struct list_elem *b, void *aux);
 /* [jaeyoon] */
+bool cmp_thread_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+/* [jaeyoon] */
 void thread_wakeup (int64_t global_ticks);
+/* [jaeyoon] */
+void preempt_priority(void);
+/* [jaeyoon] */
+bool cmp_sema_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+/* [jaeyoon] */
+bool cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+/* [jaeyoon] */
+void donate_priority(void);
+/* [jaeyoon] */
+void remove_donor(struct lock *lock);
+/* [jaeyoon] */
+void update_priority_before_donations(void);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);
