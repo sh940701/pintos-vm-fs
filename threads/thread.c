@@ -172,8 +172,6 @@ thread_tick (void) {
 	if (thread_mlfqs)
 		mlfq_scheduler(t);
 
-	thread_wake(timer_ticks());
-
 	/* Enforce preemption. */
 	if (++thread_ticks >= TIME_SLICE)
 		intr_yield_on_return ();
@@ -182,48 +180,28 @@ thread_tick (void) {
 
 void mlfq_scheduler(struct thread *t)
 {
-	enum intr_level old_level;
 	struct thread *tar_t;
 	struct list_elem *tar_elem;
-
-	old_level = intr_disable();	
 	int now_tick = timer_ticks();
 
-	if (t != idle_thread) {
+	if (t != idle_thread) 
 		t->recent_cpu += N_to_FP(1);
-		// 중복 제거하여 삽mlfq_scheduler입
-		tar_elem = list_head(&ch_prior_list);
-		while ((tar_elem = tar_elem->next) != &t->check_prior_elem)
-			if (tar_elem == &ch_prior_list.tail){
-				list_push_back(&ch_prior_list, &t->check_prior_elem);
-				break;
-		}
-	}
 
 	// TIMER_FREQ(100) 마다 전체 thread를 순회하며 recent_cpu와 load_avg 갱신
-	if (now_tick % TIMER_FREQ == 0){
-		thread_cal_load_avg();
+	if (now_tick % 4 == 0){
+		if (now_tick % TIMER_FREQ == 0)
+			thread_cal_load_avg();
 		tar_elem = list_head(&thread_list);
 		while ((tar_elem = tar_elem->next) != &thread_list.tail){
 			tar_t = list_entry(tar_elem, struct thread, thread_elem);
-			thread_cal_recent_cpu(tar_t);
-			if (t->status == THREAD_BLOCKED)
+			if (now_tick % TIMER_FREQ == 0)
+				thread_cal_recent_cpu(tar_t);
+			mlfq_cal_priority(tar_t);		// 4 tick마다 priority 갱신
+			if (tar_t->status == THREAD_BLOCKED)
 				thread_reschedule(tar_t);
 		}
-		list_sort(&ready_list, priority_larger, READY_LIST);
+		list_sort(&ready_list, priority_larger, READY_LIST);	
 	}
-	
-	// 4 tick 마다 recent_cpu가 갱신된 thread만 우선순위 갱신
-	if (now_tick % 4 == 0) {
-		while (!list_empty(&ch_prior_list)) {
-			tar_elem = list_pop_front(&ch_prior_list);
-			tar_t = list_entry(tar_elem, struct thread, check_prior_elem);
-			mlfq_cal_priority(tar_t);
-			thread_reschedule(tar_t);
-		} 
-		list_init(&ch_prior_list);	
-	}	
-	intr_set_level(old_level);
 }
 
 
@@ -743,12 +721,8 @@ schedule (void) {
 		if (curr && curr->status == THREAD_DYING && curr != initial_thread) {
 			ASSERT (curr != next);
 			list_push_back (&destruction_req, &curr->elem);
-			if (thread_mlfqs){
+			if (thread_mlfqs)
 				list_remove(&curr->thread_elem);
-				list_remove(&curr->elem);
-				list_remove(&curr->sleep_elem);
-				list_remove(&curr->check_prior_elem);
-			}
 		}
 		/* Before switching the thread, we first save the information
 		 * of current running. */
@@ -792,6 +766,7 @@ void thread_wake(int64_t ticks)
 		} else 
 			break;
 	}
+
 }
 
 /* debbuging */ 
