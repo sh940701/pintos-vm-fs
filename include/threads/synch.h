@@ -53,8 +53,9 @@ void cond_broadcast (struct condition *, struct lock *);
 #define barrier() asm volatile ("" : : : "memory")
 
 /* priority scheduling */
-void priority_donation(struct lock *lock, struct thread *donator);
-void donation_withdraw(struct thread *donator);
+void donate_priority(void);
+void remove_donor(struct lock *lock);
+void update_priority_before_donations(void);
 void thread_reschedule(struct thread* t);
 
 /* for debugging */ 

@@ -56,11 +56,9 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 #define TIMER_FREQ 100
 static int load_avg = 0;
 static struct list thread_list;
-static struct list ch_prior_list;
 
 /* p.q float number */
 int f = (1<<14);
-
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -68,7 +66,6 @@ int f = (1<<14);
 bool thread_mlfqs;
 
 static void kernel_thread (thread_func *, void *aux);
-
 static void idle (void *aux UNUSED);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
@@ -122,9 +119,8 @@ thread_init (void) {
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	list_init (&destruction_req);
-	list_init (&sleep_list);
+	list_init(&sleep_list);
 	list_init(&thread_list);
-	list_init(&ch_prior_list);
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -204,7 +200,6 @@ void mlfq_scheduler(struct thread *t)
 	}
 }
 
-
 /* Prints thread statistics. */
 void
 thread_print_stats (void) {
@@ -264,10 +259,7 @@ thread_create (const char *name, int priority,
 	/* Add to run queue. */
 	if (t != idle_thread)
 		thread_unblock(t);
-
-	if (list_entry(list_begin(&ready_list), struct thread, elem)->priority > thread_current()->priority)
-		thread_yield();			// 새롭게 생성한 thread의 우선순위가 높은경우 양보
-
+	preempt_priority();
 	return tid;
 }
 
@@ -305,6 +297,56 @@ thread_unblock (struct thread *t) {
 	/* 우선순위 크기순으로 내림차순정렬 */
 	list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
 	intr_set_level (old_level);
+}
+
+/* 잠든 스레드를 sleep_list에 삽입하는 함수 */
+void thread_sleep(int64_t ticks)
+{
+	struct thread *curr = thread_current();
+	ASSERT(curr != idle_thread); 
+	
+	enum intr_level old_level;
+	old_level = intr_disable(); 
+
+	curr->wakeup_ticks = ticks;    
+	list_insert_ordered(&sleep_list, &curr->elem, priority_larger, SLEEP_LIST); 
+	thread_block(); 
+
+	intr_set_level(old_level); 
+}
+
+/* 깨울 스레드를 sleep_list에서 제거하고 ready_list에 삽입 */
+void thread_wakeup(int64_t current_ticks)
+{
+	enum intr_level old_level;
+	old_level = intr_disable();
+
+	struct list_elem *curr_elem = list_begin(&sleep_list);
+	while (curr_elem != list_end(&sleep_list))
+	{
+		struct thread *curr_thread = list_entry(curr_elem, struct thread, elem); 
+		if (current_ticks >= curr_thread->wakeup_ticks) // 깰 시간이 됐으면
+		{
+			curr_elem = list_remove(curr_elem); 
+			thread_unblock(curr_thread);        	
+		}
+		else
+			break;
+	}
+	intr_set_level(old_level);
+}
+
+/* ready_list에 현재 스레드의 priority보다 높은 priority를 가지는 스레드가 있으면 그 스레드에게 양보 */
+void preempt_priority(void)
+{
+	if (thread_current() == idle_thread)
+        return;
+    if (list_empty(&ready_list))
+        return;
+    struct thread *curr = thread_current();
+    struct thread *ready = list_entry(list_front(&ready_list), struct thread, elem);
+    if (curr->priority < ready->priority) 	// ready_list에 현재 실행중인 스레드보다 우선순위가 높은 스레드가 있으면
+        thread_yield();
 }
 
 /* Returns the name of the running thread. */
@@ -376,17 +418,25 @@ priority_larger (const struct list_elem *insert_elem, const struct list_elem *cm
             typelist type) 
 {	
 	struct thread *t, *cmp_t;
-	if ((type == WAIT_LIST) || (type == READY_LIST)){
-		t = list_entry(insert_elem, struct thread, elem);
-		cmp_t = list_entry(cmp_elem, struct thread, elem);	
-	} else if (type == COND_LIST) {
-		t = thread_current();
-		struct semaphore cmp = list_entry(cmp_elem, struct semaphore_elem, elem)->semaphore;
-		cmp_t = list_entry(list_begin(&cmp.waiters), struct thread, elem);
-	} else if (type == SLEEP_LIST) {
-		t = list_entry(insert_elem, struct thread, sleep_elem);
-		cmp_t = list_entry(cmp_elem, struct thread, sleep_elem);
-		return t->ticks_cnt < cmp_t->ticks_cnt;
+	switch(type) {
+		case WAIT_LIST:
+		case READY_LIST:
+			t = list_entry(insert_elem, struct thread, elem);
+			cmp_t = list_entry(cmp_elem, struct thread, elem);
+			break;
+		case DONATION_LIST:
+			t = list_entry(insert_elem, struct thread, donation_elem);
+			cmp_t = list_entry(cmp_elem, struct thread, donation_elem);
+			break;
+		case COND_LIST:
+			t = thread_current();
+			struct semaphore cmp = list_entry(cmp_elem, struct semaphore_elem, elem)->semaphore;
+			cmp_t = list_entry(list_begin(&cmp.waiters), struct thread, elem);
+			break;
+		case SLEEP_LIST:
+			t = list_entry(insert_elem, struct thread, elem);
+			cmp_t = list_entry(cmp_elem, struct thread, elem);
+			return t->wakeup_ticks < cmp_t->wakeup_ticks;
 	}
 	return t->priority > cmp_t->priority;
 }
@@ -403,39 +453,10 @@ void thread_readylist_reorder (struct thread *t){
 
 /* 우선순위 재설정 후 높은 우선순위가 있다면 양보 */
 void
-thread_set_priority(int new_priority) {
-	enum intr_level old_level;
-	old_level = intr_disable();	
-	struct thread *curr = thread_current();
-	if (thread_mlfqs)
-		curr->priority = new_priority;	
-	else if (curr->nested_depth == -1)
-		curr->priority = new_priority;
-	else if (curr->priority < new_priority) { // donation받은 값들 전부 제거
-		curr->priority = new_priority;
-		curr->nested_depth = -1;
-	}
-	else // 새롭게 설정된 priority 값보다 낮게 기부 받은 값은 전부 삭제
-	{	
-		int idx;
-		curr->saved_priority[0] = new_priority;
-		for (idx = 1; idx <= curr->nested_depth; idx++)
-			if (curr->saved_priority[idx] > new_priority){
-				// pop한 빈칸 당겨서 매우기
-				for (int sidx = idx; sidx <= curr->nested_depth; sidx++) {
-					curr->saved_priority[sidx-idx+1] = curr->saved_priority[sidx+1];
-					curr->saved_lock[sidx-idx] = curr->saved_lock[sidx-1];
-				}
-				curr->nested_depth -= idx-1;
-				break;
-			}
-	}
-	intr_set_level(old_level);	
-	if (!list_empty(&ready_list)) {
-		struct thread *top_t = list_entry(list_begin(&ready_list), struct thread, elem);
-		if (top_t->priority > new_priority)
-			thread_yield();			
-	}
+thread_set_priority (int new_priority) {
+	thread_current ()->init_priority = new_priority;
+	update_priority_for_donations();
+	preempt_priority();
 }
 
 /* Returns the current thread's priority. */
@@ -451,8 +472,7 @@ thread_set_nice (int nice UNUSED) {
 	
 	thread_current()->nice = nice;
 	mlfq_cal_priority(thread_current());
-	if ((!list_empty(&ready_list)) && (thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority)) 
-		thread_yield();
+	preempt_priority();
 }
 
 /* Returns the current thread's nice value. */
@@ -553,15 +573,16 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
-	t->nested_depth = -1;							/* checking depth during priority donation */
-	t->donation_depth = -1;							/* checking depth when collecting return of donation */
-	t->blocked_lock = NULL;							/* the lock blocking the thread */
-	t->ticks_cnt = 0;
 	t->nice = 0;
 	t->recent_cpu = 0;
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
 	t->magic = THREAD_MAGIC;
+
+	/* for donation */
+	t->init_priority = priority;
+    t->wait_on_lock = NULL;
+    list_init(&(t->donations));
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -578,6 +599,7 @@ next_thread_to_run (void) {
 }
 
 /* Use iretq to launch the thread */
+/* 새로운 스레드의 context를 레지스터에 저장 */
 void
 do_iret (struct intr_frame *tf) {
 	__asm __volatile(
@@ -600,8 +622,8 @@ do_iret (struct intr_frame *tf) {
 			"addq $120,%%rsp\n"
 			"movw 8(%%rsp),%%ds\n"
 			"movw (%%rsp),%%es\n"
-			"addq $32, %%rsp\n"
-			"iretq"
+			"addq $32, %%rsp\n"      // 다시 한 번 스택 포인터를 조정하여, iretq 명령어를 실행하기 전에 필요한 스택의 위치로 이동시킵니다. iretq는 'interrupt return'의 약자로, 이 명령어는 인터럽트 또는 예외가 처리된 후 초기 상태로 복귀하는데 사용됩니다.
+			"iretq"					 // 최종적으로 iretq 명령어를 실행하여, 이전 상태로 복귀합니다. 이 과정에는 코드 세그먼트 레지스터(CS), 인스트럭션 포인터(RIP), 그리고 프로그램 상태 레지스터(RFLAGS)가 스택에서 복원되어, 원래 실행하던 프로그램의 지점으로 정확히 돌아가 계속 실행될 수 있게 합니다.
 			: : "g" ((uint64_t) tf) : "memory");
 }
 
@@ -615,6 +637,7 @@ do_iret (struct intr_frame *tf) {
    It's not safe to call printf() until the thread switch is
    complete.  In practice that means that printf()s should be
    added at the end of the function. */
+/* 현재 스레드의 context를 스레드의 interrupt frame에 옮기는 작업 그리고 do_iret함수를 호출 register rdi에 tf포인터를 인자로 넘기며 */
 static void
 thread_launch (struct thread *th) {
 	uint64_t tf_cur = (uint64_t) &running_thread ()->tf;
@@ -628,12 +651,19 @@ thread_launch (struct thread *th) {
 	 * until switching is done. */
 	__asm __volatile (
 			/* Store registers that will be used. */
+			/* register rax, rbx, rcx의 값을 stack에 저장한다(다른값(tf_cut과 tf의 interrupt frame을 가리키는 포인터(8바이트)))으로 
+			채울것이기 때문에, 스택에 저장해놓는것) */
 			"push %%rax\n"
 			"push %%rbx\n"
 			"push %%rcx\n"
 			/* Fetch input once */
+			/* movq %0, %%rax : 첫 번째 입력(%0, 여기서는 tf_cur)을 rax 레지스터로 이동합니다.
+			   movq는 64비트 값을 이동하는 명령어로, 여기서는 tf_cur 포인터를 rax에 저장합니다.
+			   movq %1, %%rcx : 두 번째 입력(%1, 여기서는 tf)를 rcx 레지스터로 이동합니다. 
+			   이 작업도 포인터를 레지스터로 옮기는 작업입니다. */
 			"movq %0, %%rax\n"
 			"movq %1, %%rcx\n"
+			/* rax가 가키리는 주소값+x에 레지스터들의 값들을 저장한다.(tf_cur의 interrupt frame에 다음에 실행할때의 context를 저장) */
 			"movq %%r15, 0(%%rax)\n"
 			"movq %%r14, 8(%%rax)\n"
 			"movq %%r13, 16(%%rax)\n"
@@ -646,30 +676,35 @@ thread_launch (struct thread *th) {
 			"movq %%rdi, 72(%%rax)\n"
 			"movq %%rbp, 80(%%rax)\n"
 			"movq %%rdx, 88(%%rax)\n"
+			/* 스택에서 pop해서 register rbx에 저장(a, b, c순으로 넣었으므로 c가 나왔을것임) */
 			"pop %%rbx\n"              // Saved rcx
+			/* 원래 rcx에 있던값을 tf_cur의 interrupt frame에 저장 */
 			"movq %%rbx, 96(%%rax)\n"
 			"pop %%rbx\n"              // Saved rbx
 			"movq %%rbx, 104(%%rax)\n"
 			"pop %%rbx\n"              // Saved rax
 			"movq %%rbx, 112(%%rax)\n"
+			/* addq $120, %%rax: rax 레지스터의 값에 120을 더합니다. 
+			이는 rax가 가리키는 위치를 조정하여 특정 저장 공간(예: 인터럽트 프레임)에 접근하기 위한 준비 작업입니다. */
 			"addq $120, %%rax\n"
 			"movw %%es, (%%rax)\n"
 			"movw %%ds, 8(%%rax)\n"
 			"addq $32, %%rax\n"
+			/* 현재의 명령 포인터(rip) 값을 스택에 저장하고 __next 라벨로 점프합니다. 이는 rip 값을 얻기 위한 트릭입니다. */
 			"call __next\n"         // read the current rip.
-			"__next:\n"
-			"pop %%rbx\n"
-			"addq $(out_iret -  __next), %%rbx\n"
-			"movq %%rbx, 0(%%rax)\n" // rip
-			"movw %%cs, 8(%%rax)\n"  // cs
-			"pushfq\n"
-			"popq %%rbx\n"
+			"__next:\n" // rip 값을 얻는 목적지 라벨입니다.
+			"pop %%rbx\n" // 이전 명령(call __next)에 의해 스택에 저장되었던 rip 값을 rbx 레지스터로 가져옵니다.
+			"addq $(out_iret -  __next), %%rbx\n" // rbx의 값(현재 rip의 값)에 (out_iret - __next)를 더합니다. 이는 인터럽트 후에 실행을 계속할 위치를 계산하기 위함입니다.
+			"movq %%rbx, 0(%%rax)\n" // rip.  gpt의 설명 : 계산된 rip 값을 rax가 가리키는 위치에 저장합니다.
+			"movw %%cs, 8(%%rax)\n"  // cs.   gpt의 설명 : 코드 세그먼트 레지스터 cs의 값을 rax가 가리키는 위치로 부터 8바이트 떨어진 곳에 저장합니다.
+			"pushfq\n"				 // 플래그 레지스터의 현재 상태를 스택에 저장합니다.
+			"popq %%rbx\n"			 // 스택에서 플래그 레지스터 값을 꺼내어 rbx에 저장합니다.
 			"mov %%rbx, 16(%%rax)\n" // eflags
 			"mov %%rsp, 24(%%rax)\n" // rsp
-			"movw %%ss, 32(%%rax)\n"
-			"mov %%rcx, %%rdi\n"
-			"call do_iret\n"
-			"out_iret:\n"
+			"movw %%ss, 32(%%rax)\n" // 스택 세그먼트 레지스터 ss의 값을 rax가 가리키는 위치로부터 32바이트 떨어진 곳에 저장합니다.
+			"mov %%rcx, %%rdi\n"     // 변수 혹은 포인터를 함수 do_iret에 전달하기 위해 rcx의 값을 rdi에 복사합니다. x86_64 호출 규약에서 첫 번째 인자는 rdi를 통해 전달됩니다.
+			"call do_iret\n"         // do_iret 함수를 호출합니다. 이 함수는 인터럽트 후에 처리를 진행합니다.
+			"out_iret:\n"            // addq 명령에서 사용된 라벨로, rip 위치 계산에 필요합니다.
 			: : "g"(tf_cur), "g" (tf) : "memory"
 			);
 }
@@ -741,45 +776,4 @@ allocate_tid (void) {
 	lock_release (&tid_lock);
 
 	return tid;
-}
-
-/* timer_sleep에 사용될 ticks 횟수를 ticks_list에 오름차순을로 기록하는 함수 */
-void record_sleeptick(int64_t ticks) 
-{	
-	struct thread *t = thread_current();
-	t->ticks_cnt = ticks;
-	list_insert_ordered(&sleep_list, &t->sleep_elem, priority_larger, SLEEP_LIST);
-	thread_block();
-}
-
-/* 매 tick마다 sleep에 의해 block된 thread들을 찾아서 unblock */ 
-void thread_wake(int64_t ticks)
-{	
-	struct list_elem *start_elem = list_head(&sleep_list);
-	struct thread *sleeping_thread;
-	while ((start_elem = list_next(start_elem)) != list_tail(&sleep_list)){
-		sleeping_thread = list_entry(start_elem, struct thread, sleep_elem);
-		// over recored_ticks 
-		if (sleeping_thread->ticks_cnt <= ticks){
-			list_remove(start_elem);
-			thread_unblock(sleeping_thread);
-		} else 
-			break;
-	}
-
-}
-
-/* debbuging */ 
-void print_readylist(int loop)
-{	
-	printf("========================= ready list start =========================\n");
-	print_list(&ready_list, loop);
-	printf("========================== ready list end ==========================\n");
-}
-
-void print_sleeplist(int loop)
-{	
-	printf("========================= sleep list start =========================\n");
-	print_list(&sleep_list, loop);
-	printf("========================== sleep list end ==========================\n");
 }

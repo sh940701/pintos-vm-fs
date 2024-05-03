@@ -97,7 +97,7 @@ struct thread {
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
-
+	
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
@@ -110,41 +110,33 @@ struct thread {
 	/* Owned by thread.c. */
 	struct intr_frame tf;               		/* Information for switching */
 	/* Alarm Clock */
-	struct list_elem sleep_elem;        		/* List element for timer_sleep */
-	int64_t ticks_cnt;							/* memory ticks for timer_sleep */
+	int64_t wakeup_ticks;						// 일어날 시각 추가
 	/* Priority scheduling */
-	int saved_priority[MAX_DONATION_LEVEL];			/* donation_withdraw을 할 때 저장한 priority를 불러오기 위해 */
-	struct lock *saved_lock[MAX_DONATION_LEVEL];	/* 각 lock 별로 한번씩만 priority donation을 하기 위해(중복 체크용) */
-	int nested_depth;							/* priority donation 횟수를 기록 */
-	struct thread *beneficiary_list[MAX_DONATION_LEVEL];		/* priority donation한 목록을 기억 */
-	int donation_list[MAX_DONATION_LEVEL];		/* donation한 priority 값을 기억 */
-	int donation_depth;							/* donation한 횟수를 기억 */
-	struct lock *blocked_lock;					/* priortiy donation chain할 때 재귀적으로 탐색하기 위해 */
+	int init_priority;
+    struct lock *wait_on_lock;
+    struct list donations;				/* 이 스레드한테 도네이션 한 스레드들 목록 */
+    struct list_elem donation_elem;		/* 다른 스레드한테 도네이션 했을때, 다른 스레드의 donations list에 들어갈 list_elem */	
 	/* Advanced Scheduler */
 	int nice;
 	int recent_cpu;
 	struct list_elem thread_elem;        		
-	struct list_elem check_prior_elem;        	
 	unsigned magic;                     		/* Detects stack overflow. */
 };
 
 /* for alaram-multiple */
-void record_sleeptick(int64_t ticks);
-void thread_wake(int64_t ticks);
+void thread_sleep(int64_t ticks);
+void thread_wakeup(int64_t current_ticks);
 
 /* for priority scheduling */
-typedef enum {READY_LIST, WAIT_LIST, COND_LIST, SLEEP_LIST} typelist;
+typedef enum {READY_LIST, WAIT_LIST, DONATION_LIST, COND_LIST, SLEEP_LIST} typelist;
+void preempt_priority(void);
 bool priority_larger (const struct list_elem *insert_elem, const struct list_elem *cmp_elem, typelist type);
-void thread_readylist_reorder (struct thread *lock_t);
 
 /* for advanced scheduler */
 void mlfq_scheduler(struct thread *t);
 void mlfq_cal_priority(struct thread *t);
 void thread_cal_load_avg(void);
 void thread_cal_recent_cpu(struct thread *t);
-
-/* for debugging */ 
-void print_readylist(int loop);
 
 /* arithmetic cal */
 #define N_to_FP(n) ((n) * f)
@@ -158,7 +150,6 @@ void print_readylist(int loop);
 #define MUL_X_N(x, n) ((x) * (n))
 #define DIV_X_Y(x, y) ((((int64_t) (x)) * f) / (y))
 #define DIV_X_N(x, n) ((x) / (n))
-typedef enum {UNDONE, DONE} check;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
