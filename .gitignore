@@ -149,5 +149,7 @@ fabric.properties
 *.dsk
 *.txt
 *.log
+tests/
+userprog/build/tests/
 
 results

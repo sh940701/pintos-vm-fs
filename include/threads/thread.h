@@ -104,7 +104,7 @@ struct thread
 	uint64_t *pml4; /* Page map level 4 */
 
 	/* system call */
-	struct file_entry *fdt[32];
+	struct file_entry **fdt;
 	uint64_t fdt_index;
 #endif
 #ifdef VM
