@@ -57,19 +57,19 @@ void syscall_init(void)
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
-void check_address(void *addr)
+void check_address(void *uaddr)
 {
-	// if (addr != NULL || is_kernel_vaddr(addr) || pml4_get_page(thread_current()->pml4, addr) == NULL)
-	// {
-	// 	// exit(-1);
-	// }
+	struct thread *cur = thread_current();
+	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(cur->pml4, uaddr) == NULL)
+	{
+		exit(-1);
+	}
 }
 
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
 	int temp = f->R.rax;
-	int fd;
 	switch (temp)
 	{
 	case SYS_HALT:
@@ -84,19 +84,23 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 
 	case SYS_CREATE:
+		create(f->R.rdi, f->R.rsi);
 		break;
 	case SYS_REMOVE:
 		break;
 	case SYS_OPEN:
-		fd = open(f->R.rdi);
+		int fd = open(f->R.rdi);
 		f->R.rax = fd;
 		break;
 	case SYS_FILESIZE:
+		int size = filesize(f->R.rdi);
+		f->R.rax = size;
 		break;
 	case SYS_READ:
 		break;
 	case SYS_WRITE:
 		write(f->R.rdi, f->R.rsi, f->R.rdx);
+		break;
 	case SYS_SEEK:
 		break;
 	case SYS_TELL:
@@ -117,7 +121,8 @@ void halt()
 
 void exit(int status)
 {
-	printf("exit(%d)", status);
+
+	printf("%s: exit(%d)\n", thread_current()->name, status);
 	thread_exit();
 }
 
@@ -127,28 +132,43 @@ pid_t fork(const char *thread_name)
 }
 int exec(const char *file);
 int wait(pid_t);
-bool create(const char *file, unsigned initial_size);
-bool remove(const char *file);
+bool create(const char *file, unsigned initial_size)
+{
+	check_address(file);
+	bool success;
+	success = filesys_create(file, initial_size);
+	return success;
+}
+bool remove(const char *file)
+{
+	check_address(file);
+	bool success;
+	success = filesys_remove(file);
+	return success;
+}
 
 int open(const char *file)
 {
-	// check_address(file);
+	check_address(file);
 	struct file *entry = filesys_open(file);
-
-	// printf("%s", file);
+	struct file_entry *file_table;
+	file_table->file = entry;
+	file_table->refcnt = 1;
 	if (entry == NULL)
 		return -1;
-	struct thread *cur;
-	cur = thread_current();
+	struct thread *cur = thread_current();
 	int fd = cur->fdt_index++;
-	// cur->fdt[fd] = entry;
-	//  int fd = thread_current()->fdt_index++;
-	//   thread_current()->fdt[fd] = entry;
-	//    entry->refcnt = 1;
+	cur->fdt[fd] = file_table;
 	return fd;
 }
 
-int filesize(int fd);
+int filesize(int fd)
+{
+	struct thread *cur = thread_current();
+	int length;
+	length = file_length(cur->fdt[fd]->file);
+	return length;
+}
 int read(int fd, void *buffer, unsigned length);
 int write(int fd, const void *buffer, unsigned length)
 {
