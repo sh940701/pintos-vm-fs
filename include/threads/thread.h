@@ -105,7 +105,6 @@ struct thread
 
 	/* system call */
 	struct file_entry **fdt;
-	uint64_t fdt_index;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

@@ -1,14 +1,33 @@
 {
-    "configurations": [
-      {
-        "type": "gdb",
-        "request": "attach",
-        "name": "Attach to gdbserver : threads",
-        "executable": "${workspaceRoot}/threads/build/kernel.o",
-        "target": "localhost:1234",
-        "remote": true,
-        "cwd": "${workspaceRoot}",
-        "valuesFormatting": "parseText"
-      }
-    ]
-  }
+  "configurations": [
+    {
+      "type": "gdb",
+      "request": "attach",
+      "name": "Attach to gdbserver : userprog",
+      "executable": "${workspaceRoot}/userprog/build/kernel.o",
+      "target": "localhost:1234",
+      "remote": true,
+      "cwd": "${workspaceRoot}",
+      "valuesFormatting": "parseText"
+    },
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "cwd": "/home/ubuntu/cproject/pintos11/threads",
+      "program": "/home/ubuntu/cproject/pintos11/threads/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}
