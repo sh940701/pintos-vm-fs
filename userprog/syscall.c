@@ -25,6 +25,9 @@
 
 #define GET_FILE_ETY(fdt, fd) (*((fdt) + (fd)))
 
+/* system call */
+struct lock filesys_lock;
+
 struct file_entry
 {
 	struct file *file;
@@ -58,12 +61,15 @@ void syscall_init(void)
 	 * mode stack. Therefore, we masked the FLAG_FL. */
 	write_msr(MSR_SYSCALL_MASK,
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
+	lock_init(&filesys_lock);
 }
 
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {
 	int syscall = f->R.rax;
+	if ((5 <= syscall) && (syscall <= 13))
+		lock_acquire(&filesys_lock);
 	switch (syscall)
 	{
 	case SYS_HALT:
@@ -115,6 +121,8 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		printf("We don't implemented yet.");
 		break;
 	}
+	if ((5 <= syscall) && (syscall <= 13))
+		lock_release(&filesys_lock);
 }
 /*
  * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
