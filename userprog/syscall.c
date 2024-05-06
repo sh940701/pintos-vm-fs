@@ -8,9 +8,11 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "lib/user/syscall.h"
-#include <string.h>
-#include <stdlib.h>
+#include "lib/string.h"
+#include "threads/malloc.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
+#include "filesys/inode.h"
 #include "devices/disk.h"
 
 /* System call.
@@ -75,9 +77,14 @@ void syscall_init(void)
 	lock_init(&filesys_lock);
 }
 
+void test(void) {
+	*(int *)NULL = 42;
+}
+
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
-{
+{	
+	//test();
 	int syscall = f->R.rax;
 	if ((5 <= syscall) && (syscall <= 13))
 		lock_acquire(&filesys_lock);
@@ -152,9 +159,10 @@ void halt()
 }
 
 void exit(int status)
-{
-	if (strcmp(thread_current()->name, "main"))
-		printf("%s: exit(%d)\n", thread_current()->name, status);
+{	
+	struct thread *curr = thread_current();
+	if (strcmp(curr->name, "main"))
+		printf("%s: exit(%d)\n", curr->name, status);
 	thread_exit();
 }
 
@@ -209,7 +217,7 @@ int open(const char *file)
 int filesize(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT(3 <= fd);
+	ASSERT((3 <= fd) && (fd < MAX_FD));
 
 	return file_length(GET_FILE_ETY(cur->fdt, fd)->file);
 }
@@ -219,7 +227,13 @@ int filesize(int fd)
  * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음
  */
 int read(int fd, void *buffer, unsigned length)
-{
+{	
+	if ((fd < 0) || (fd >= MAX_FD))
+		return -1;
+
+	if (length == 0)	// not read
+		return 0;
+
 	check_address(buffer);
 	struct thread *cur = thread_current();
 	int bytes_read = length;
@@ -238,7 +252,7 @@ int read(int fd, void *buffer, unsigned length)
 		return -1; // wrong fd
 
 	default:
-		if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
+		if (GET_FILE_ETY(cur->fdt, fd) == NULL) // wrong fd
 			return -1;
 
 		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
@@ -258,12 +272,12 @@ int read(int fd, void *buffer, unsigned length)
  */
 int write(int fd, const void *buffer, unsigned length)
 {
+	if ((fd <= 0) || (fd >= MAX_FD))	// no bytes could be written at all
+		return 0;
+
 	/* fd == 0 => stdin, fd == 1 => stdout, fd == 2 => stderr */
 	check_address(buffer);
 	struct thread *cur = thread_current();
-	if (0 == fd) // no bytes could be written at all
-		return 0;
-
 	int bytes_write = length;
 	switch (fd)
 	{
@@ -285,6 +299,9 @@ int write(int fd, const void *buffer, unsigned length)
 		break;
 
 	default: // file growth is not implemented by the basic file system
+		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
+			return 0;
+
 		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
 		bytes_write = file_write(cur_file, buffer, length);
 		break;
@@ -296,7 +313,7 @@ int write(int fd, const void *buffer, unsigned length)
 void seek(int fd, unsigned position)
 {
 	struct thread *cur = thread_current();
-	ASSERT(3 <= fd);
+	ASSERT((3 <= fd) && (fd < MAX_FD));
 
 	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
 	file_seek(cur_file, position);
@@ -305,7 +322,7 @@ void seek(int fd, unsigned position)
 unsigned tell(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT(3 <= fd);
+	ASSERT((3 <= fd) && (fd < MAX_FD));
 
 	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
 	return file_tell(cur_file);
@@ -315,7 +332,7 @@ void close(int fd)
 {
 	struct thread *cur = thread_current();
 	ASSERT(3 <= fd);
-	if (fd >= MAX_FD)
+	if ((fd < 0) || (fd >= MAX_FD))
 		return;
 
 	struct file_entry *cur_file_entry = GET_FILE_ETY(cur->fdt, fd);
