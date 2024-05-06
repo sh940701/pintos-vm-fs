@@ -587,7 +587,9 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->nice = 0;
 	t->recent_cpu = 0;
 #ifdef USERPROG
-	t->fdt_index = 3;
+	t->fdt_index = 2;
+	list_init(&t->file_table);
+	t->fdt = palloc_get_multiple(PAL_ZERO, 3);		// for multi-oom test
 #endif
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
@@ -737,6 +739,9 @@ do_schedule(int status)
 	{
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
+#ifdef USERPROG
+		palloc_free_multiple(t->fdt, 3);
+#endif
 		palloc_free_page(victim);
 	}
 	thread_current()->status = status;
