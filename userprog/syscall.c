@@ -21,9 +21,9 @@
 #define MSR_STAR 0xc0000081			/* Segment selector msr */
 #define MSR_LSTAR 0xc0000082		/* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
-#define MAX_STDOUT 1<<9
+#define MAX_STDOUT (1 << 9)
 
-#define GET_FILE_ETY(fdt, fd) (*((fdt) + fd))
+#define GET_FILE_ETY(fdt, fd) (*((fdt) + (fd)))
 
 struct file_entry
 {
@@ -82,8 +82,8 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		f->R.rax = succ;
 		break;
 	case SYS_REMOVE:
-		bool succ = remove(f->R.rdi);
-		f->R.rax = succ;
+		bool succ_remove = remove(f->R.rdi);
+		f->R.rax = succ_remove;
 		break;
 	case SYS_OPEN:
 		int fd = open(f->R.rdi);
@@ -116,8 +116,8 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 	}
 }
-/* 
- * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지 
+/*
+ * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
  * 3. 물리주소내에 mapping하는지 확인하여 위반하는경우 종료
  */
 void check_address(void *uaddr)
@@ -134,7 +134,8 @@ void halt()
 
 void exit(int status)
 {
-	printf("%s: exit(%d)\n", thread_current()->name, status);
+	if (strcmp(thread_current()->name, "main"))
+		printf("%s: exit(%d)\n", thread_current()->name, status);
 	thread_exit();
 }
 
@@ -157,7 +158,7 @@ bool remove(const char *file)
 	return filesys_remove(file);
 }
 
-/* 
+/*
  * 잘못된 파일 이름을 가지거나 disk에 파일이 없는경우 -1 반환.
  * thread 내에 file_entry ptr을 저장한 뒤, 표준입출력을 제외한 3부터 증가하는 fd 값을 반환.
  */
@@ -165,16 +166,24 @@ int open(const char *file)
 {
 	check_address(file);
 	struct file *file_entity = filesys_open(file);
-	struct file_entry *file_object = calloc(1, sizeof(file_entry));
+	struct file_entry *file_object = calloc(1, sizeof(struct file_entry));
 	file_object->file = file_entity;
-	file_object->refcnt = 1;			// for fork  
-	if (file_entity == NULL)			// wrong file name or not in disk (initialized from arg -p)
+	file_object->refcnt = 1; // for fork
+	if (file_entity == NULL) // wrong file name or not in disk (initialized from arg -p)
 		return -1;
 
 	// initialize
 	struct thread *cur = thread_current();
-	int fd = ++cur->fdt_index;
-	GET_FILE_ETY(cur->fdt, fd) = file_object;
+	int fd;
+	for (fd = 3; fd < 192; fd++)
+	{
+		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
+		{
+			GET_FILE_ETY(cur->fdt, fd) = file_object;
+			break;
+		}
+		ASSERT(fd < 192);
+	}
 	return fd;
 }
 
@@ -186,44 +195,45 @@ int filesize(int fd)
 	return file_length(GET_FILE_ETY(cur->fdt, fd)->file);
 }
 
-/* 
+/*
  * fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환
- * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음 
+ * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음
  */
 int read(int fd, void *buffer, unsigned length)
-{	
+{
 	check_address(buffer);
 	struct thread *cur = thread_current();
-	int bytes_read = length;	
+	int bytes_read = length;
 	switch (fd)
-	{	
-		case 0:
-			uint8_t byte;
-			while (length--){
-				byte = input_getc();			// console 입력을 받아
-				*(char *)buffer++ = byte;		// 1byte씩 저장
-			}
-			break;
-		case 1:
-		case 2:		
-			return -1;	// wrong fd 
+	{
+	case 0:
+		uint8_t byte;
+		while (length--)
+		{
+			byte = input_getc();	  // console 입력을 받아
+			*(char *)buffer++ = byte; // 1byte씩 저장
+		}
+		break;
+	case 1:
+	case 2:
+		return -1; // wrong fd
 
-		default:
-			if (fd > cur->fdt_index)	// wrong fd 
-				return -1;
+	default:
+		// if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
+		// 	return -1;
 
-			struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;	
-			if (cur_file->pos == inode_length(cur_file->inode))		// end of file
-				return 0;
+		// struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+		// if (cur_file->pos == inode_length(cur_file->inode)) // end of file
+		// 	return 0;
 
-			if ((bytes_read = file_read(cur_file, buffer, length)) == 0)	// could not read
-				return -1;		
-			break;
+		// if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
+		// 	return -1;
+		// break;
 	}
 	return bytes_read;
 }
 
-/* 
+/*
  * fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환
  * 참고 : disk write에 lock이 걸려있음
  */
@@ -232,43 +242,44 @@ int write(int fd, const void *buffer, unsigned length)
 	/* fd == 0 => stdin, fd == 1 => stdout, fd == 2 => stderr */
 	check_address(buffer);
 	struct thread *cur = thread_current();
-	if (0 == fd)	// no bytes could be written at all
+	if (0 == fd) // no bytes could be written at all
 		return 0;
 
-	int bytes_write = length;	
+	int bytes_write = length;
 	switch (fd)
 	{
-		case 1: // stdout: lock을 걸고 buffer 전체를 입력
-			uint8_t iter_cnt = length / MAX_STDOUT + 1;
-			uint16_t less_size;
-			while (iter_cnt--){			// 입력 buffer가 512보다 큰경우 slicing 해서 출력 (for test)
-				less_size = (length > MAX_STDOUT) ? MAX_STDOUT : length;
-				putbuf(buffer, less_size);
-				buffer += less_size;
-				length -= MAX_STDOUT;
-			}
-			break;
+	case 1: // stdout: lock을 걸고 buffer 전체를 입력
+		int iter_cnt = length / MAX_STDOUT + 1;
+		int less_size;
+		while (iter_cnt--)
+		{ // 입력 buffer가 512보다 큰경우 slicing 해서 출력 (for test)
+			less_size = (length > MAX_STDOUT) ? MAX_STDOUT : length;
+			putbuf(buffer, less_size);
+			buffer += less_size;
+			length -= MAX_STDOUT;
+		}
+		break;
 
-		case 2: // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
-			while (length-- > 0)
-				putchar(buffer++);	
-			break;
+	case 2: // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
+		while (length-- > 0)
+			putchar(buffer++);
+		break;
 
-		default:	// file growth is not implemented by the basic file system
-			struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;	
-			bytes_write = file_write(cur_file, buffer, length);
-			break;
+	default: // file growth is not implemented by the basic file system
+		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+		bytes_write = file_write(cur_file, buffer, length);
+		break;
 	}
 	return bytes_write;
 }
 
 /* 파일 크기가 넘어가는 position인 경우 write할 때 자동으로 0으로 채워지는지 확인해야됨*/
 void seek(int fd, unsigned position)
-{	
+{
 	struct thread *cur = thread_current();
 	ASSERT(3 <= fd);
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;	
+	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
 	file_seek(cur_file, position);
 }
 
@@ -277,7 +288,7 @@ unsigned tell(int fd)
 	struct thread *cur = thread_current();
 	ASSERT(3 <= fd);
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;	
+	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
 	return file_tell(cur_file);
 }
 
@@ -287,10 +298,12 @@ void close(int fd)
 	ASSERT(3 <= fd);
 
 	struct file_entry *cur_file_entry = GET_FILE_ETY(cur->fdt, fd);
-	if (cur_file_entry->refcnt > 0)				// if fork
+	if (cur_file_entry->refcnt > 1) // if fork
 		cur_file_entry->refcnt--;
-	else{
+	else
+	{
 		file_close(cur_file_entry->file);
 		free(cur_file_entry);
+		GET_FILE_ETY(cur->fdt, fd) = NULL;
 	}
 }

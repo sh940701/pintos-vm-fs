@@ -52,6 +52,8 @@ tid_t process_create_initd(const char *file_name)
 	strlcpy(fn_copy, file_name, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
+	char *next_ptr;
+	strtok_r(file_name, " ", &next_ptr);
 	tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page(fn_copy);
@@ -208,10 +210,10 @@ int process_exec(void *f_name)
 		total_size += len;
 	}
 
-	size_t remainder = total_size % 8;
+	size_t remainder = (total_size + 8 + 8 * temp_cnt) % 16;
 	if (remainder != 0)
 	{
-		size_t padding_size = 8 - remainder;
+		size_t padding_size = 16 - remainder;
 		_if.rsp -= padding_size;
 
 		// 패딩된 영역을 0으로 초기화합니다.
@@ -264,9 +266,13 @@ void push_register(struct intr_frame _if, char *temp, char filename)
  * does nothing. */
 int process_wait(tid_t child_tid UNUSED)
 {
+	// thread_sleep(150);
 	while (1)
 	{
 	}
+	// for (int i = 0; i < 100000000; i++)
+	// {
+	// }
 	return -1;
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
@@ -281,7 +287,7 @@ void process_exit(void)
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	
+
 	process_cleanup();
 }
 
