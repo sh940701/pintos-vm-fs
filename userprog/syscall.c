@@ -8,6 +8,10 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "lib/user/syscall.h"
+#include <string.h>
+#include <stdlib.h>
+#include "filesys/filesys.h"
+#include "devices/disk.h"
 
 /* System call.
  *
@@ -22,7 +26,7 @@
 #define MSR_LSTAR 0xc0000082		/* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 #define MAX_STDOUT (1 << 9)
-
+#define MAX_FD 192
 #define GET_FILE_ETY(fdt, fd) (*((fdt) + (fd)))
 
 /* system call */
@@ -32,6 +36,13 @@ struct file_entry
 {
 	struct file *file;
 	uint32_t refcnt;
+};
+
+/* An open file. */
+struct file {
+	struct inode *inode;        /* File's inode. */
+	off_t pos;                  /* Current position. */
+	bool deny_write;            /* Has file_deny_write() been called? */
 };
 
 void syscall_entry(void);
@@ -183,14 +194,14 @@ int open(const char *file)
 	// initialize
 	struct thread *cur = thread_current();
 	int fd;
-	for (fd = 3; fd < 192; fd++)
+	for (fd = 3; fd < MAX_FD; fd++)
 	{
 		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
 		{
 			GET_FILE_ETY(cur->fdt, fd) = file_object;
 			break;
 		}
-		ASSERT(fd < 192);
+		ASSERT(fd < MAX_FD);
 	}
 	return fd;
 }
@@ -227,16 +238,16 @@ int read(int fd, void *buffer, unsigned length)
 		return -1; // wrong fd
 
 	default:
-		// if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
-		// 	return -1;
+		if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
+			return -1;
 
-		// struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
-		// if (cur_file->pos == inode_length(cur_file->inode)) // end of file
-		// 	return 0;
+		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
+			return 0;
 
-		// if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
-		// 	return -1;
-		// break;
+		if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
+			return -1;
+		break;
 	}
 	return bytes_read;
 }
@@ -304,14 +315,19 @@ void close(int fd)
 {
 	struct thread *cur = thread_current();
 	ASSERT(3 <= fd);
+	if (fd >= MAX_FD)
+		return;
 
 	struct file_entry *cur_file_entry = GET_FILE_ETY(cur->fdt, fd);
+	if (cur_file_entry == NULL)
+		return;
+
 	if (cur_file_entry->refcnt > 1) // if fork
 		cur_file_entry->refcnt--;
 	else
 	{
 		file_close(cur_file_entry->file);
 		free(cur_file_entry);
-		GET_FILE_ETY(cur->fdt, fd) = NULL;
+		cur_file_entry = NULL;
 	}
 }

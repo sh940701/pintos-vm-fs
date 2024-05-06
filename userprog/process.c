@@ -267,12 +267,12 @@ void push_register(struct intr_frame _if, char *temp, char filename)
 int process_wait(tid_t child_tid UNUSED)
 {
 	// thread_sleep(150);
-	while (1)
-	{
-	}
-	// for (int i = 0; i < 100000000; i++)
+	// while (1)
 	// {
 	// }
+	for (int i = 0; i < 100000000; i++)
+	{
+	}
 	return -1;
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
