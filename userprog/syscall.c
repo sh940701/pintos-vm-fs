@@ -34,17 +34,12 @@
 /* system call */
 struct lock filesys_lock;
 
-struct file_entry
-{
-	struct file *file;
-	uint32_t refcnt;
-};
-
 /* An open file. */
-struct file {
-	struct inode *inode;        /* File's inode. */
-	off_t pos;                  /* Current position. */
-	bool deny_write;            /* Has file_deny_write() been called? */
+struct file
+{
+	struct inode *inode; /* File's inode. */
+	off_t pos;			 /* Current position. */
+	bool deny_write;	 /* Has file_deny_write() been called? */
 };
 
 void syscall_entry(void);
@@ -62,6 +57,7 @@ void seek(int fd, unsigned position);
 unsigned tell(int fd);
 void close(int fd);
 void check_address(void *addr);
+void copy_register(struct intr_frame *target, struct intr_frame *source);
 
 void syscall_init(void)
 {
@@ -77,14 +73,10 @@ void syscall_init(void)
 	lock_init(&filesys_lock);
 }
 
-void test(void) {
-	*(int *)NULL = 42;
-}
 
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
 {	
-	//test();
 	int syscall = f->R.rax;
 	if ((5 <= syscall) && (syscall <= 13))
 		lock_acquire(&filesys_lock);
@@ -97,10 +89,16 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		exit(f->R.rdi);
 		break;
 	case SYS_FORK:
+		copy_register(&thread_current()->tf, f); 
+		bool succ_fork = fork(f->R.rdi);
+		f->R.rax = succ_fork;
+		break;
+	case SYS_EXEC:
 		break;
 	case SYS_WAIT:
+		pid_t pid = wait(f->R.rdi);
+		f->R.rax = pid;
 		break;
-
 	case SYS_CREATE:
 		bool succ = create(f->R.rdi, f->R.rsi);
 		f->R.rax = succ;
@@ -153,25 +151,70 @@ void check_address(void *uaddr)
 		exit(-1);
 }
 
+void copy_register(struct intr_frame *target, struct intr_frame *source) 
+{
+	memcpy(&target->R.r15, &source->R.r15, sizeof(uint64_t));
+	memcpy(&target->R.r14, &source->R.r14, sizeof(uint64_t));
+	memcpy(&target->R.r13, &source->R.r13, sizeof(uint64_t));
+	memcpy(&target->R.r12, &source->R.r12, sizeof(uint64_t));
+	memcpy(&target->R.rbx, &source->R.rbx, sizeof(uint64_t));
+	memcpy(&target->R.rbp, &source->R.rbp, sizeof(uint64_t));
+	memcpy(&target->rsp, &source->rsp, sizeof(uintptr_t));
+	memcpy(&target->rip, &source->rip, sizeof(uintptr_t));
+}
+
 void halt()
 {
 	power_off();
 }
 
 void exit(int status)
-{	
+{
 	struct thread *curr = thread_current();
+	curr->exit_status = status;
 	if (strcmp(curr->name, "main"))
 		printf("%s: exit(%d)\n", curr->name, status);
 	thread_exit();
 }
 
 pid_t fork(const char *thread_name)
-{
-	// thread_create(thread_name, );
+{	
+	check_address(thread_name);
+	struct thread *parent = thread_current();
+
+	pid_t child_tid = process_fork(thread_name);
+	thread_current()->child_thread = NULL;
+	if (thread_current()->tid != child_tid){ // include TID_ERROR
+		lock_acquire(&parent->child_thread->fork_lock);
+		cond_signal(&parent->child_thread->fork_cond, &parent->child_thread->fork_lock);
+		lock_release(&parent->child_thread->fork_lock);
+		return child_tid;
+	}
+	return 0;
 }
-int exec(const char *file);
-int wait(pid_t);
+
+int exec(const char *file)
+{
+
+}
+
+int wait(pid_t pid) {
+	struct thread *curr = thread_current();
+	struct list *fl = &curr->fork_list;
+	struct list_elem *start_elem;
+	if (curr->exit_status != 123456789)
+		return curr->exit_status;
+
+	for (start_elem = list_begin(fl); start_elem == list_end(fl); start_elem = list_next(start_elem)) {
+		if (list_entry(start_elem, struct thread, fork_elem)->tid == pid) 
+			break;
+		
+		if (start_elem == list_tail(fl))
+			return -1;
+	}
+	sema_down(&curr->wait_sema);
+	return curr->exit_status;
+}
 
 bool create(const char *file, unsigned initial_size)
 {
@@ -193,9 +236,6 @@ int open(const char *file)
 {
 	check_address(file);
 	struct file *file_entity = filesys_open(file);
-	struct file_entry *file_object = calloc(1, sizeof(struct file_entry));
-	file_object->file = file_entity;
-	file_object->refcnt = 1; // for fork
 	if (file_entity == NULL) // wrong file name or not in disk (initialized from arg -p)
 		return -1;
 
@@ -206,7 +246,8 @@ int open(const char *file)
 	{
 		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
 		{
-			GET_FILE_ETY(cur->fdt, fd) = file_object;
+			GET_FILE_ETY(cur->fdt, fd) = file_entity;
+			cur->fdt_maxi = (cur->fdt_maxi < fd) ? fd : cur->fdt_maxi;
 			break;
 		}
 		ASSERT(fd < MAX_FD);
@@ -219,7 +260,7 @@ int filesize(int fd)
 	struct thread *cur = thread_current();
 	ASSERT((3 <= fd) && (fd < MAX_FD));
 
-	return file_length(GET_FILE_ETY(cur->fdt, fd)->file);
+	return file_length(GET_FILE_ETY(cur->fdt, fd));
 }
 
 /*
@@ -227,11 +268,11 @@ int filesize(int fd)
  * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음
  */
 int read(int fd, void *buffer, unsigned length)
-{	
+{
 	if ((fd < 0) || (fd >= MAX_FD))
 		return -1;
 
-	if (length == 0)	// not read
+	if (length == 0) // not read
 		return 0;
 
 	check_address(buffer);
@@ -252,10 +293,11 @@ int read(int fd, void *buffer, unsigned length)
 		return -1; // wrong fd
 
 	default:
-		if (GET_FILE_ETY(cur->fdt, fd) == NULL) // wrong fd
+
+		if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
 			return -1;
 
-		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
@@ -272,7 +314,7 @@ int read(int fd, void *buffer, unsigned length)
  */
 int write(int fd, const void *buffer, unsigned length)
 {
-	if ((fd <= 0) || (fd >= MAX_FD))	// no bytes could be written at all
+	if ((fd <= 0) || (fd >= MAX_FD)) // no bytes could be written at all
 		return 0;
 
 	/* fd == 0 => stdin, fd == 1 => stdout, fd == 2 => stderr */
@@ -302,7 +344,7 @@ int write(int fd, const void *buffer, unsigned length)
 		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
 			return 0;
 
-		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 		bytes_write = file_write(cur_file, buffer, length);
 		break;
 	}
@@ -315,7 +357,7 @@ void seek(int fd, unsigned position)
 	struct thread *cur = thread_current();
 	ASSERT((3 <= fd) && (fd < MAX_FD));
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 	file_seek(cur_file, position);
 }
 
@@ -324,7 +366,7 @@ unsigned tell(int fd)
 	struct thread *cur = thread_current();
 	ASSERT((3 <= fd) && (fd < MAX_FD));
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd)->file;
+	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 	return file_tell(cur_file);
 }
 
@@ -335,16 +377,11 @@ void close(int fd)
 	if ((fd < 0) || (fd >= MAX_FD))
 		return;
 
-	struct file_entry *cur_file_entry = GET_FILE_ETY(cur->fdt, fd);
-	if (cur_file_entry == NULL)
+	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+	if (cur_file == NULL)
 		return;
 
-	if (cur_file_entry->refcnt > 1) // if fork
-		cur_file_entry->refcnt--;
-	else
-	{
-		file_close(cur_file_entry->file);
-		free(cur_file_entry);
-		cur_file_entry = NULL;
-	}
+	file_close(cur_file);
+	free(cur_file);
+	GET_FILE_ETY(cur->fdt, fd) = NULL;
 }

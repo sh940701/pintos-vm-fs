@@ -395,6 +395,14 @@ void thread_exit(void)
 
 #ifdef USERPROG
 	process_exit();
+	struct list_elem *curr = &thread_current()->fork_elem;
+	while (curr->prev != NULL)
+		curr = curr->prev;
+	struct thread *parent = list_entry(curr, struct thread, fork_list.head);
+	parent->exit_status = thread_current()->exit_status;
+	sema_up(&parent->wait_sema);
+	list_remove(&thread_current()->fork_elem);
+	
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -590,6 +598,11 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->nice = 0;
 	t->recent_cpu = 0;
+	t->fdt_maxi = 2;
+	t->exit_status = 123456789;
+	lock_init(&t->fork_lock);
+	cond_init(&t->fork_cond);
+	sema_init(&t->wait_sema, 0);
 
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
@@ -598,7 +611,8 @@ init_thread(struct thread *t, const char *name, int priority)
 	/* for donation */
 	t->init_priority = priority;
 	t->wait_on_lock = NULL;
-	list_init(&(t->donations));
+	list_init(&t->donations);
+	list_init(&t->fork_list);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -741,6 +755,10 @@ do_schedule(int status)
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
 #ifdef USERPROG
 		palloc_free_multiple(victim->fdt, 3);
+		pml4_destroy(victim->pml4);
+		for (int i = 3; i <= victim->fdt_maxi; i++)
+			if (victim->fdt[i] != NULL)
+				file_close(victim->fdt[i]);
 #endif
 		palloc_free_page(victim);
 	}

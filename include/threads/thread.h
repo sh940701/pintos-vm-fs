@@ -104,7 +104,16 @@ struct thread
 	uint64_t *pml4; /* Page map level 4 */
 
 	/* system call */
-	struct file_entry **fdt;
+	struct file **fdt;
+	int fdt_maxi;
+	struct condition fork_cond;
+	struct lock fork_lock;
+	struct thread *child_thread;
+
+	struct semaphore wait_sema;
+	struct list fork_list;
+	struct list_elem fork_elem;
+	int exit_status;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
