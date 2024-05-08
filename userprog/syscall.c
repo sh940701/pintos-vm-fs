@@ -75,7 +75,7 @@ void syscall_init(void)
 
 
 /* The main system call interface */
-void syscall_handler(struct intr_frame *f UNUSED)
+void syscall_handler(struct intr_frame *f)
 {	
 	int syscall = f->R.rax;
 	if ((5 <= syscall) && (syscall <= 13))
@@ -89,9 +89,12 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		exit(f->R.rdi);
 		break;
 	case SYS_FORK:
+		enum intr_level old_level;
+		old_level = intr_disable();
 		copy_register(&thread_current()->tf, f); 
 		bool succ_fork = fork(f->R.rdi);
 		f->R.rax = succ_fork;
+		intr_set_level(old_level);	
 		break;
 	case SYS_EXEC:
 		break;
@@ -181,16 +184,12 @@ pid_t fork(const char *thread_name)
 {	
 	check_address(thread_name);
 	struct thread *parent = thread_current();
-
-	pid_t child_tid = process_fork(thread_name);
-	thread_current()->child_thread = NULL;
-	if (thread_current()->tid != child_tid){ // include TID_ERROR
-		lock_acquire(&parent->child_thread->fork_lock);
-		cond_signal(&parent->child_thread->fork_cond, &parent->child_thread->fork_lock);
-		lock_release(&parent->child_thread->fork_lock);
-		return child_tid;
-	}
-	return 0;
+	pid_t tid = process_fork(thread_name);
+	sema_down(&parent->fork_sema);
+		
+	if (parent->exit_status != 123456789)
+		return TID_ERROR;
+	return tid;
 }
 
 int exec(const char *file)
@@ -199,21 +198,25 @@ int exec(const char *file)
 }
 
 int wait(pid_t pid) {
-	struct thread *curr = thread_current();
-	struct list *fl = &curr->fork_list;
+	struct thread *child, *parent = thread_current();
+	struct list *fl = &parent->fork_list;
 	struct list_elem *start_elem;
-	if (curr->exit_status != 123456789)
-		return curr->exit_status;
+	if (parent->exit_status != 123456789)	// 자식이 먼저 죽은 경우
+		return parent->exit_status;
 
-	for (start_elem = list_begin(fl); start_elem == list_end(fl); start_elem = list_next(start_elem)) {
-		if (list_entry(start_elem, struct thread, fork_elem)->tid == pid) 
+	// 자식을 찾음
+	for (start_elem = list_begin(fl); start_elem != list_end(fl); start_elem = list_next(start_elem)) {
+		child = list_entry(start_elem, struct thread, fork_elem);
+		if (child->tid == pid) 
 			break;
 		
-		if (start_elem == list_tail(fl))
+		if (start_elem == list_tail(fl))	// pid가 자식이 아닌 경우
 			return -1;
 	}
-	sema_down(&curr->wait_sema);
-	return curr->exit_status;
+	sema_down(&parent->wait_sema);
+	int temp = parent->exit_status;
+	parent->exit_status = 123456789;
+	return temp;
 }
 
 bool create(const char *file, unsigned initial_size)

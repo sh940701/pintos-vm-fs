@@ -118,7 +118,7 @@ void thread_init(void)
 	list_init(&ready_list);
 	list_init(&destruction_req);
 	list_init(&sleep_list);
-	list_init(&thread_list);
+
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread();
@@ -127,6 +127,7 @@ void thread_init(void)
 	initial_thread->tid = allocate_tid();
 	if (thread_mlfqs)
 	{
+		list_init(&thread_list);
 		mlfq_cal_priority(initial_thread);
 	}
 }
@@ -398,11 +399,17 @@ void thread_exit(void)
 	struct list_elem *curr = &thread_current()->fork_elem;
 	while (curr->prev != NULL)
 		curr = curr->prev;
-	struct thread *parent = list_entry(curr, struct thread, fork_list.head);
-	parent->exit_status = thread_current()->exit_status;
-	sema_up(&parent->wait_sema);
-	list_remove(&thread_current()->fork_elem);
+
+	if (curr != &thread_current()->fork_elem){
+		struct thread *parent = list_entry(curr, struct thread, fork_list.head);
+		list_remove(&thread_current()->fork_elem);
+		parent->exit_status = thread_current()->exit_status;
+		sema_up(&parent->wait_sema);
+	}
 	
+	if (thread_current()->tid == 3)
+		init_up();
+
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -600,8 +607,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->recent_cpu = 0;
 	t->fdt_maxi = 2;
 	t->exit_status = 123456789;
-	lock_init(&t->fork_lock);
-	cond_init(&t->fork_cond);
+	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
 
 	if (thread_mlfqs)

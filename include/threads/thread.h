@@ -106,10 +106,7 @@ struct thread
 	/* system call */
 	struct file **fdt;
 	int fdt_maxi;
-	struct condition fork_cond;
-	struct lock fork_lock;
-	struct thread *child_thread;
-
+	struct semaphore fork_sema;
 	struct semaphore wait_sema;
 	struct list fork_list;
 	struct list_elem fork_elem;

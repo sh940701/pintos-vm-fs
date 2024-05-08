@@ -29,12 +29,17 @@ static void initd(void *f_name);
 static void __do_fork(void *);
 int wait(pid_t);
 void copy_register(struct intr_frame *target, struct intr_frame *source);
+static struct semaphore init_sema;
 
 /* General process initializer for initd and other process. */
 static void
 process_init(void)
 {
 	struct thread *current = thread_current();
+}
+
+void init_up(void){
+	sema_up(&init_sema);
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -83,15 +88,8 @@ initd(void *f_name)
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 {
 	/* Clone current thread to new thread.*/
-	enum intr_level old_level;
-	old_level = intr_disable();
 	struct thread *parent = thread_current();
-	tid_t child_pid = thread_create(name, PRI_DEFAULT, __do_fork, parent);
-	lock_acquire(&parent->fork_lock);
-	cond_wait(&parent->fork_cond, &parent->fork_lock);
-	lock_release(&parent->fork_lock);
-	intr_set_level(old_level);
-	return child_pid;
+	return thread_create(name, PRI_DEFAULT, __do_fork, parent);
 }
 
 #ifndef VM
@@ -120,7 +118,6 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
 	writable = is_writable(pte);
-	memcpy(newpage, parent_page, PGSIZE);
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
 	if (!pml4_set_page(current->pml4, va, newpage, writable))
@@ -140,8 +137,6 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 static void
 __do_fork(void *aux)
 {
-	enum intr_level old_level;
-	old_level = intr_disable();	
 	struct intr_frame if_;
 	struct thread *parent = (struct thread *)aux;
 	struct thread *current = thread_current();
@@ -149,6 +144,7 @@ __do_fork(void *aux)
 	struct intr_frame *parent_if = &parent->tf;
 	bool succ = true;
 
+	sema_up(&parent->fork_sema);
 	/* 1. Read the cpu context to local stack. */
 	// memcpy(&if_, parent_if, sizeof(struct intr_frame));
 	copy_register(&if_, parent_if);
@@ -180,20 +176,14 @@ __do_fork(void *aux)
 
 	/* Finally, switch to the newly created process. */
 	if (succ){
-		parent->child_thread = thread_current();
-		lock_acquire(&parent->fork_lock);
-		cond_signal(&parent->fork_cond, &parent->fork_lock);
-		lock_release(&parent->fork_lock);
 		list_push_back(&parent->fork_list, &current->fork_elem);
 		list_init(&current->fork_list);
-		intr_set_level(old_level);
+		if_.R.rax = 0;		// 자식의 fork return value는 0
 		do_iret(&if_);
 	}
 error:
-	lock_acquire(&parent->fork_lock);
-	cond_signal(&parent->fork_cond, &parent->fork_lock);
-	lock_release(&parent->fork_lock);
-	intr_set_level(old_level);
+	parent->exit_status = -1;		// 실패한 경우 엄마를 깨우고 유언은 남김
+	sema_up(&parent->wait_sema);
 	thread_exit();
 }
 
@@ -297,8 +287,10 @@ void push_register(struct intr_frame _if, char *temp, char filename)
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int process_wait(tid_t child_tid UNUSED)
-{
-	return wait(1);
+{	
+	sema_init(&init_sema, 0);
+	sema_down(&init_sema);		// tid 3 thread가 thread_exit하기전 깨움
+	return 0;
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
