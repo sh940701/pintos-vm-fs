@@ -126,7 +126,7 @@ make_children (void) {
       break;
     }
   }
-
+  printf("out: %d  current name: %s, wait pid: %d\n ", i, child_name, pid);
   int depth = wait (pid);
   if (depth < 0)
 	  fail ("Should return > 0.");

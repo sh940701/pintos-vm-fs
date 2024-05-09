@@ -111,6 +111,8 @@ struct thread
 	struct list fork_list;
 	struct list_elem fork_elem;
 	int exit_status;
+	struct intr_frame temp_tf;
+	struct file *opend_file; 
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

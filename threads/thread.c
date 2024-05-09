@@ -13,6 +13,7 @@
 #include "intrinsic.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "filesys/file.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -242,9 +243,10 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
+	t->fdt = palloc_get_multiple(PAL_USER | PAL_ZERO, 3); // for multi-oom test
+	if (!strcmp(thread_current()->name, "main"))			// for process wait
+		list_push_back(&thread_current()->fork_list, &t->fork_elem);
 #endif
-
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t)kernel_thread;
@@ -396,20 +398,27 @@ void thread_exit(void)
 
 #ifdef USERPROG
 	process_exit();
-	struct list_elem *curr = &thread_current()->fork_elem;
-	while (curr->prev != NULL)
-		curr = curr->prev;
+	struct list_elem *curr_elem = &thread_current()->fork_elem;
+	struct thread *parent, *curr = thread_current();
 
-	if (curr != &thread_current()->fork_elem){
-		struct thread *parent = list_entry(curr, struct thread, fork_list.head);
-		list_remove(&thread_current()->fork_elem);
-		parent->exit_status = thread_current()->exit_status;
-		sema_up(&parent->wait_sema);
-	}
+	// close open file which is loaded from process.c (denying write on executables)
+	if (curr->opend_file)
+		file_close(curr->opend_file);	
+
+	// finding parent thread by fork
+	while (curr_elem->prev != NULL)
+		curr_elem = curr_elem->prev;
 	
-	if (thread_current()->tid == 3)
-		init_up();
-
+	if (curr_elem != &curr->fork_elem){		
+		parent = list_entry(curr_elem, struct thread, fork_list.head);
+		sema_up(&curr->wait_sema);
+		if (strcmp(parent->name, "main"))
+			sema_down(&curr->fork_sema);		// to give exit status
+		else {
+			sema_up(&parent->wait_sema);
+			list_remove(&curr->fork_elem);
+		}
+	}
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -607,6 +616,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->recent_cpu = 0;
 	t->fdt_maxi = 2;
 	t->exit_status = 123456789;
+	t->opend_file = NULL;
 	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
 
@@ -760,11 +770,11 @@ do_schedule(int status)
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
 #ifdef USERPROG
-		palloc_free_multiple(victim->fdt, 3);
-		pml4_destroy(victim->pml4);
 		for (int i = 3; i <= victim->fdt_maxi; i++)
 			if (victim->fdt[i] != NULL)
 				file_close(victim->fdt[i]);
+		palloc_free_multiple(victim->fdt, 3);
+		pml4_destroy(victim->pml4);
 #endif
 		palloc_free_page(victim);
 	}
