@@ -103,9 +103,9 @@ struct thread
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4; /* Page map level 4 */
 
-	/* system call */
+	/* System Call */
 	struct file **fdt;
-	int fdt_maxi;
+	int fdt_maxfd;
 	struct semaphore fork_sema;
 	struct semaphore wait_sema;
 	struct list fork_list;
@@ -140,8 +140,7 @@ void thread_sleep(int64_t ticks);
 void thread_wakeup(int64_t current_ticks);
 
 /* for priority scheduling */
-typedef enum
-{
+typedef enum {
 	READY_LIST,
 	WAIT_LIST,
 	DONATION_LIST,
@@ -150,6 +149,8 @@ typedef enum
 } typelist;
 void preempt_priority(void);
 bool priority_larger(const struct list_elem *insert_elem, const struct list_elem *cmp_elem, typelist type);
+void update_priority_for_donations(void);
+void thread_readylist_reorder(struct thread *t);
 
 /* for advanced scheduler */
 void mlfq_scheduler(struct thread *t);

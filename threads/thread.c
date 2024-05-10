@@ -13,6 +13,7 @@
 #include "intrinsic.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "userprog/syscall.h"
 #include "filesys/file.h"
 #endif
 
@@ -73,6 +74,7 @@ static void init_thread(struct thread *, const char *name, int priority);
 static void do_schedule(int status);
 static void schedule(void);
 static tid_t allocate_tid(void);
+void fillock_release(void);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -119,7 +121,6 @@ void thread_init(void)
 	list_init(&ready_list);
 	list_init(&destruction_req);
 	list_init(&sleep_list);
-
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread();
@@ -175,6 +176,7 @@ void thread_tick(void)
 		intr_yield_on_return();
 }
 
+/* Time_freq마다 recent_cpu, load_avg 갱신, 4tick마다 priority갱신 후 우선 순위 선점*/
 void mlfq_scheduler(struct thread *t)
 {
 	struct thread *tar_t;
@@ -243,10 +245,13 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	t->fdt = palloc_get_multiple(PAL_USER | PAL_ZERO, 3); // for multi-oom test
-	if (!strcmp(thread_current()->name, "main"))			// for process wait
-		list_push_back(&thread_current()->fork_list, &t->fork_elem);
+	if ((t->fdt = palloc_get_page(PAL_USER | PAL_ZERO)) == NULL) {
+		palloc_free_page(t);
+		return TID_ERROR;
+	}
+	list_push_back(&thread_current()->fork_list, &t->fork_elem);
 #endif
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t)kernel_thread;
@@ -264,7 +269,7 @@ tid_t thread_create(const char *name, int priority,
 		t->recent_cpu = thread_current()->recent_cpu;
 		mlfq_cal_priority(t);
 	}
-
+	
 	/* Add to run queue. */
 	if (t != idle_thread)
 		thread_unblock(t);
@@ -397,28 +402,7 @@ void thread_exit(void)
 	ASSERT(!intr_context());
 
 #ifdef USERPROG
-	process_exit();
-	struct list_elem *curr_elem = &thread_current()->fork_elem;
-	struct thread *parent, *curr = thread_current();
-
-	// close open file which is loaded from process.c (denying write on executables)
-	if (curr->opend_file)
-		file_close(curr->opend_file);	
-
-	// finding parent thread by fork
-	while (curr_elem->prev != NULL)
-		curr_elem = curr_elem->prev;
-	
-	if (curr_elem != &curr->fork_elem){		
-		parent = list_entry(curr_elem, struct thread, fork_list.head);
-		sema_up(&curr->wait_sema);
-		if (strcmp(parent->name, "main"))
-			sema_down(&curr->fork_sema);		// to give exit status
-		else {
-			sema_up(&parent->wait_sema);
-			list_remove(&curr->fork_elem);
-		}
-	}
+	process_exit();	
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -614,9 +598,10 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->nice = 0;
 	t->recent_cpu = 0;
-	t->fdt_maxi = 2;
+	t->fdt_maxfd = 2;
 	t->exit_status = 123456789;
 	t->opend_file = NULL;
+	t->pml4 = NULL;
 	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
 
@@ -769,13 +754,6 @@ do_schedule(int status)
 	{
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
-#ifdef USERPROG
-		for (int i = 3; i <= victim->fdt_maxi; i++)
-			if (victim->fdt[i] != NULL)
-				file_close(victim->fdt[i]);
-		palloc_free_multiple(victim->fdt, 3);
-		pml4_destroy(victim->pml4);
-#endif
 		palloc_free_page(victim);
 	}
 	thread_current()->status = status;

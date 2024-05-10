@@ -18,7 +18,7 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
-
+#include "userprog/syscall.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -28,7 +28,7 @@ static bool load(const char *file_name, struct intr_frame *if_);
 static void initd(void *f_name);
 static void __do_fork(void *);
 int wait(pid_t);
-static struct semaphore init_sema;
+void argument_passing(char *argv[], struct intr_frame *_if, int argc);
 
 /* General process initializer for initd and other process. */
 static void
@@ -106,7 +106,8 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
-	newpage = palloc_get_page(PAL_USER | PAL_ZERO);	
+	if ((newpage = palloc_get_page(PAL_USER | PAL_ZERO)) == NULL)
+		return false;
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
@@ -118,7 +119,6 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	if (!pml4_set_page(current->pml4, va, newpage, writable))
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
-		palloc_free_page(newpage);
 		return false;
 	}
 	return true;
@@ -151,26 +151,26 @@ __do_fork(void *aux)
 	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
 		goto error;
 #else
-	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))
+	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))	// pml4의 page복사
 		goto error;
 #endif
 
-	// fd copy
+	// duplicate fdt & file
 	process_init();
-	for (int i = 3; i <= parent->fdt_maxi; i++)
+	for (int i = 3; i <= parent->fdt_maxfd; i++)
 		if (parent->fdt[i] != NULL)
 			current->fdt[i] = file_duplicate(parent->fdt[i]);
-	current->fdt_maxi = parent->fdt_maxi;
+	current->fdt_maxfd = parent->fdt_maxfd;
 
 	/* Finally, switch to the newly created process. */
-	list_push_back(&parent->fork_list, &current->fork_elem);
 	sema_up(&parent->fork_sema);
 	do_iret(&if_);
 
 error:
-	current->exit_status = -1;		// 실패한 경우 엄마를 깨우고 유언은 남김
+	// 실패한 경우 엄마를 깨우고 tid error를 전달하기 위해 list_remove
+	current->exit_status = -1;		
+	list_remove(&current->fork_elem); 	
 	sema_up(&parent->fork_sema);
-	sema_up(&parent->wait_sema);
 	thread_exit();
 }
 
@@ -189,74 +189,67 @@ int process_exec(void *f_name)
 
 	/* We first kill the current context */
 	process_cleanup();
-
-	/* 파싱 시작 */
-	char *temp[64];
-	int temp_cnt = 0;
-	char *next_ptr;
-	char *ret_ptr;
+	
+	/* filename 파싱 시작 */
+	char *next_ptr, *ret_ptr, *argv[64];
+	int argc = 0;
 
 	ret_ptr = strtok_r(file_name, " ", &next_ptr);
-
 	while (ret_ptr)
 	{
-		temp[temp_cnt++] = ret_ptr;
+		argv[argc++] = ret_ptr;
 		ret_ptr = strtok_r(NULL, " ", &next_ptr);
 	}
-	/* 파싱 끝 */
-
-	if (!load(file_name, &_if))
+	
+	if (!load(argv[0], &_if)){
+		palloc_free_page(file_name);
 		return -1;
-
-	/* 패싱 시작 */
-	size_t total_size = 0;
-	for (int i = temp_cnt - 1; i >= 0; i--)
-	{
-		int len = strlen(temp[i]) + 1;
-		_if.rsp -= len;
-		memcpy(_if.rsp, temp[i], len);
-		temp[i] = (char *)_if.rsp;
-		total_size += len;
 	}
-
-	size_t remainder = (total_size + 8 + 8 * temp_cnt) % 16;
-	if (remainder != 0)
-	{
-		size_t padding_size = 16 - remainder;
-		_if.rsp -= padding_size;
-
-		// 패딩된 영역을 0으로 초기화합니다.
-		memset(_if.rsp, 0, padding_size);
-	}
-
-	_if.rsp -= 8;
-	memset(_if.rsp, 0, 8);
-
-	for (int i = temp_cnt - 1; i >= 0; i--)
-	{
-		_if.rsp -= 8;
-		memcpy(_if.rsp, &temp[i], 8);
-	}
-
-	_if.rsp -= 8;
-	memset(_if.rsp, 0, 8);
-
-	_if.R.rdi = temp_cnt;
-	_if.R.rsi = (char *)_if.rsp + 8;
-	// hex_dump(_if.rsp, _if.rsp, KERN_BASE - _if.rsp, true);
-
+	argument_passing(argv, &_if, argc);
 	palloc_free_page(file_name);
+
+	_if.R.rdi = argc;
+	_if.R.rsi = (char *)_if.rsp + 8;
+	//hex_dump(_if.rsp, _if.rsp, KERN_BASE - _if.rsp, true);  // debugging
+	
 	/* Start switched process. */
 	do_iret(&_if);
 	NOT_REACHED();
 }
 
-void push_register(struct intr_frame _if, char *temp, char filename)
-{
-	if (filename != ' ')
+/* userprog stack(0x47480000)에 arguments memory stacking */
+void argument_passing(char *argv[], struct intr_frame *_if, int argc) 
+{	
+	// memcpy data argv 
+	size_t total_size = 0;
+	for (int i = argc - 1; i >= 0; i--)
 	{
-		_if.R.rdi = &filename;
+		int len = strlen(argv[i]) + 1;
+		_if->rsp -= len;
+		memcpy(_if->rsp, argv[i], len);
+		argv[i] = (char *)_if->rsp;
+		total_size += len;
 	}
+
+	size_t remainder = (total_size + 8 + 8 * argc) % 16;	
+	if (remainder != 0)
+	{
+		size_t padding_size = 16 - remainder;
+		_if->rsp -= padding_size;
+		memset(_if->rsp, 0, padding_size);	// argv[0]끝을 16 byte로 memory align
+	}
+	_if->rsp -= 8;
+	memset(_if->rsp, 0, 8);		// padding end of argv ptr 
+
+	// memcpy argv data ptr 
+	for (int i = argc - 1; i >= 0; i--)
+	{
+		_if->rsp -= 8;
+		memcpy(_if->rsp, &argv[i], 8);	
+	}
+
+	_if->rsp -= 8;
+	memset(_if->rsp, 0, 8);		// padding start of argv ptr 
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -270,14 +263,34 @@ void push_register(struct intr_frame _if, char *temp, char filename)
  * does nothing. */
 int process_wait(tid_t child_tid UNUSED)
 {	
-	sema_down(&thread_current()->wait_sema);
-	return 0;
+	return wait(child_tid);
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void)
 {
 	process_cleanup();
+	struct thread *parent, *curr = thread_current();	
+	struct list_elem *curr_elem = &curr->fork_elem;
+
+	// close open file which is loaded from process.c (denying write on executables)
+	if (curr->opend_file)
+		file_close(curr->opend_file);	
+
+	// delete fdt and file
+	for (int i = 3; i <= curr->fdt_maxfd; i++)
+		file_close(curr->fdt[i]);	
+	palloc_free_page(curr->fdt);	
+	
+	// finding waiting parent thread to give exit_status
+	while (curr_elem->prev != NULL)
+		curr_elem = curr_elem->prev;
+	
+	if (curr_elem != &curr->fork_elem){		
+		parent = list_entry(curr_elem, struct thread, fork_list.head);
+		sema_up(&curr->wait_sema);
+		sema_down(&curr->fork_sema);		// to give exit status
+	}			
 }
 
 /* Free the current process's resources. */
@@ -285,6 +298,10 @@ static void
 process_cleanup(void)
 {
 	struct thread *curr = thread_current();
+
+	// avoid deadlock
+	if (filesys_lock.holder == curr)
+		lock_release(&filesys_lock);
 
 #ifdef VM
 	supplemental_page_table_kill(&curr->spt);
@@ -397,10 +414,10 @@ load(const char *file_name, struct intr_frame *if_)
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create();
 	if (t->pml4 == NULL)
-	{
 		goto done;
-	}
+	
 	process_activate(thread_current());
+	lock_acquire(&filesys_lock);
 	/* Open executable file. */
 	file = filesys_open(file_name);
 	if (file == NULL)
@@ -425,18 +442,13 @@ load(const char *file_name, struct intr_frame *if_)
 	{
 
 		struct Phdr phdr;
-
 		if (file_ofs < 0 || file_ofs > file_length(file))
-		{
 			goto done;
-		}
 
 		file_seek(file, file_ofs);
 
 		if (file_read(file, &phdr, sizeof phdr) != sizeof phdr)
-		{
 			goto done;
-		}
 
 		file_ofs += sizeof phdr;
 		switch (phdr.p_type)
@@ -476,30 +488,24 @@ load(const char *file_name, struct intr_frame *if_)
 				}
 				if (!load_segment(file, file_page, (void *)mem_page,
 								  read_bytes, zero_bytes, writable))
-				{
 					goto done;
-				}
 			}
 			else
-			{
 				goto done;
-			}
-
 			break;
 		}
 	}
 
 	/* Set up stack. */
 	if (!setup_stack(if_))
-	{
 		goto done;
-	}
+
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
-
 	success = true;
 
 done:
+	lock_release(&filesys_lock);
 	/* We arrive here whether the load is successful or not. */
 	return success;
 }
