@@ -41,6 +41,10 @@ struct file
 
 /* if access to filesys.c, should sync */
 struct lock filesys_lock;
+void *stdin_ptr;
+void *stdout_ptr;
+void *stderr_ptr;
+struct list fetable;
 
 /* system call */
 pid_t fork(const char *thread_name);
@@ -58,6 +62,8 @@ void close(int fd);
 int process_exec(void *f_name);
 void syscall_handler(struct intr_frame *);
 struct thread *find_child(pid_t pid, struct list *fork_list);
+int dup2(int oldfd, int newfd);
+struct file *find_file(int fd, struct thread *t);
 
 void syscall_init(void)
 {
@@ -71,6 +77,10 @@ void syscall_init(void)
 	write_msr(MSR_SYSCALL_MASK,
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 	lock_init(&filesys_lock);
+	list_init(&fetable);
+	stdin_ptr = (0x123456780);
+	stdout_ptr = stdin_ptr+1;
+	stderr_ptr = stdin_ptr+2;
 }
 
 /* The main system call interface */
@@ -124,6 +134,9 @@ void syscall_handler(struct intr_frame *f)
 		case SYS_CLOSE:
 			close(f->R.rdi);
 			break;
+		case SYS_DUP2:
+			f->R.rax = dup2(f->R.rdi, f->R.rsi);
+			break;
 		default:
 			printf("We don't implemented yet.");
 			break;
@@ -143,6 +156,43 @@ void check_address(void *uaddr)
 		exit(-1);
 }
 
+/* list를 traverse하며 pid를 가지는 thread return, 못찾으면 NULL return */
+struct thread *find_child(pid_t pid, struct list *fork_list)
+{	
+	struct thread *child;
+	struct list_elem *start_elem = list_head(fork_list);
+	while ((start_elem = list_next(start_elem)) != list_tail(fork_list)) {
+		child = list_entry(start_elem, struct thread, fork_elem);
+		if (child->tid == pid) 
+			return child;
+	}
+	return NULL;
+}
+
+/* fdt를 search하여 file_ptr return, 못찾으면 NULL return */
+struct file *find_file(int fd, struct thread *t)
+{	
+	struct fdt *cur_fdt = t->fdt;
+
+	for (int i = 0; i <= t->fdt_maxidx; i++)
+		if (cur_fdt[i].fd_val == fd)
+			return cur_fdt[i].fety->file;
+	return NULL;
+}
+
+/* fetable를 traverse하며 file에 해당하는 file_entry return, 못찾으면 NULL return */
+struct file_entry *find_file_entry(struct file *find_f)
+{	
+	struct file_entry *fety;
+	struct list_elem *start_elem = list_head(&fetable);
+	while ((start_elem = list_next(start_elem)) != list_tail(&fetable)) {
+		fety = list_entry(start_elem, struct file_entry, elem);
+		if (fety->file == find_f) 
+			return fety;
+	}
+	return NULL;
+}
+
 /* power_off로 kenel process(qemu)종료 */
 void halt()
 {
@@ -160,7 +210,7 @@ void exit(int status)
 	thread_exit();
 }
 
-/* parent process의 pml4, intr_frame, fd copy 후 return tid 실패 시 return TID_ERROR */
+/* parent process의 pml4, intr_frame, fd copy 후 return tid, 실패 시 return TID_ERROR */
 pid_t fork(const char *thread_name)
 {	
 	check_address(thread_name);
@@ -183,7 +233,7 @@ int exec(const char *file)
 	check_address(file);
 	char *fn_copy = palloc_get_page(0);
 	if (fn_copy == NULL)
-		return -1;
+		exit(-1);
 	strlcpy(fn_copy, file, PGSIZE);
 
 	int exec_status;
@@ -206,22 +256,9 @@ int wait(pid_t pid)
 	sema_down(&child->wait_sema);
 	list_remove(&child->fork_elem);
 	child->fork_elem.prev = NULL;		
-	int temp = child->exit_status;		// preemption
+	int temp = child->exit_status;		// receive status, preemption
 	sema_up(&child->fork_sema);
 	return temp;
-}
-
-/* list를 traverse하며 pid를 가지는 thread return, 못찾으면 NULL return */
-struct thread *find_child(pid_t pid, struct list *fork_list)
-{	
-	struct thread *child;
-	struct list_elem *start_elem = list_head(fork_list);
-	while ((start_elem = list_next(start_elem)) != list_tail(fork_list)) {
-		child = list_entry(start_elem, struct thread, fork_elem);
-		if (child->tid == pid) 
-			return child;
-	}
-	return NULL;
 }
 
 /* initial_size의 file을 생성 후 성공여부 return, 이미 존재하거나 메모리 부족 시 fail */
@@ -240,7 +277,7 @@ bool remove(const char *file)
 
 /*
  * 잘못된 파일 이름을 가지거나 disk에 파일이 없거나 MAX_FD(512) 넘어가는 경우 -1 반환.
- * thread 내에 file_entry ptr을 저장한 뒤, 표준입출력을 제외한 3부터 증가하는 fd 값을 반환.
+ * thread 내에 file_entry ptr와 가능한 가장 낮은 fd 값을 저장한 뒤, fd 값을 반환.
  */
 int open(const char *file)
 {
@@ -251,13 +288,19 @@ int open(const char *file)
 
 	// initialize
 	struct thread *cur = thread_current();
-	int fd;
-	for (fd = 3; fd < MAX_FD; fd++)
+	int fd = 0;
+	for (int i = 0; i < MAX_FD; i++)
 	{
-		if (cur->fdt[fd] == NULL)
+		if (cur->fdt[i].fety == NULL)
 		{
-			cur->fdt[fd] = file_entity;
-			cur->fdt_maxfd = (cur->fdt_maxfd < fd) ? fd : cur->fdt_maxfd;
+			// find smallest possible fd (fd range in (0, 512))
+			for (fd = 0; fd < MAX_FD; fd++)		
+				if (!cur->fd_isval[fd])
+					break;
+
+			cur->fd_isval[fd] = true;
+			cur->fdt[i] = (struct fdt){file_entity, fd};
+			cur->fdt_maxidx = (cur->fdt_maxidx < i) ? i : cur->fdt_maxidx;
 			return fd;
 		}
 	}
@@ -269,9 +312,10 @@ int open(const char *file)
 int filesize(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd <= cur->fdt_maxfd));
+	struct file *cur_file = find_file(fd, cur);
+	ASSERT(cur_file);
 
-	return file_length(cur->fdt[fd]);
+	return file_length(cur_file);
 }
 
 /*
@@ -281,7 +325,9 @@ int filesize(int fd)
 int read(int fd, void *buffer, unsigned length)
 {
 	struct thread *cur = thread_current();
-	if ((fd < 0) || (fd > cur->fdt_maxfd))
+	struct file *cur_file = find_file(fd, cur);	
+	
+	if (cur_file == NULL)  // wrong fd
 		return -1;
 
 	if (length == 0) // not read
@@ -289,31 +335,21 @@ int read(int fd, void *buffer, unsigned length)
 
 	check_address(buffer);
 	int bytes_read = length;
-	switch (fd)
+	if (cur_file == stdin_ptr)
 	{
-	case 0:
 		uint8_t byte;
 		while (length--)
 		{
 			byte = input_getc();	  // console 입력을 받아
 			*(char *)buffer++ = byte; // 1byte씩 저장
 		}
-		break;
-	case 1:
-	case 2:
-		return -1; // wrong fd
-
-	default:
-		struct file *cur_file = cur->fdt[fd];
-		if (cur_file == NULL) // wrong fd
-			return -1;
-
+	} else
+	{
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
 		if ((bytes_read = file_read(cur_file, buffer, length)) == 0)  // could not read
 			return -1;
-		break;
 	}
 	return bytes_read;
 }
@@ -325,15 +361,15 @@ int read(int fd, void *buffer, unsigned length)
 int write(int fd, const void *buffer, unsigned length)
 {
 	struct thread *cur = thread_current();	
-	if ((fd <= 0) || (fd > cur->fdt_maxfd)) // no bytes could be written at all
+	struct file *cur_file = find_file(fd, cur);	
+	
+	if (cur_file == NULL)  // no bytes could be written at all
 		return 0;
-
-	/* fd == 0 => stdin, fd == 1 => stdout, fd == 2 => stderr */
+	
 	check_address(buffer);
 	int bytes_write = length;
-	switch (fd)
+	if (cur_file == stdout_ptr) // stdout: lock을 걸고 buffer 전체를 입력
 	{
-	case 1: // stdout: lock을 걸고 buffer 전체를 입력
 		int iter_cnt = length / MAX_STDOUT + 1;
 		int less_size;
 		while (iter_cnt--)
@@ -343,21 +379,12 @@ int write(int fd, const void *buffer, unsigned length)
 			buffer += less_size;
 			length -= MAX_STDOUT;
 		}
-		break;
-
-	case 2: // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
+	} else if (cur_file == stderr_ptr) // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
 		while (length-- > 0)
 			putchar(buffer++);
-		break;
 
-	default: // file growth is not implemented by the basic file system
-		struct file *cur_file = cur->fdt[fd];
-		if (cur_file == NULL)
-			return 0;
-
+	else  // file growth is not implemented by the basic file system
 		bytes_write = file_write(cur_file, buffer, length);
-		break;
-	}
 	return bytes_write;
 }
 
@@ -368,36 +395,68 @@ int write(int fd, const void *buffer, unsigned length)
 void seek(int fd, unsigned position)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd <= cur->fdt_maxfd));
+	struct file *cur_file = find_file(fd, cur);
+	ASSERT(cur_file);
 
-	file_seek(cur->fdt[fd], position);
+	file_seek(cur_file, position);
 }
 
 /* 현재 파일을 읽는 위치 return */
 unsigned tell(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd <= cur->fdt_maxfd));
+	struct file *cur_file = find_file(fd, cur);
+	ASSERT(cur_file);
 
-	return file_tell(cur->fdt[fd]);
+	return file_tell(cur_file);
 }
 
-/* fd에 해당하는 file을 close, 이 후 fdt_maxi도 갱신 */
+/* fd에 해당하는 file을 close, fd_isval, fd_val, fdt을 같이 갱신*/
 void close(int fd)
 {
 	struct thread *cur = thread_current();
-	if ((fd < 0) || (fd > cur->fdt_maxfd))
-		return;
-
-	if (cur->fdt[fd] == NULL)
-		return;
-
-	file_close(cur->fdt[fd]);
-	cur->fdt[fd] = NULL;
-
-	while (--fd >2) {
-		if (cur->fdt[fd] != NULL)
-			cur->fdt_maxfd = fd;
+	int idx;
+	// find fd_idx
+	for (idx = 0; idx <= cur->fdt_maxidx; idx++)
+		if (cur->fdt[idx].fd_val == fd)
 			break;
-	}
+	
+	struct file *cur_file = cur->fdt[idx].fety->file;
+	if (cur_file == NULL)
+		return;
+	file_close(cur_file);
+
+	// disable fd
+	if (cur->fdt[idx].fd_refcnt == 1) {
+		cur->fdt[idx] = (struct fdt) {NULL, -1, 0};
+
+		if (fd < MAX_FD)
+			cur->fd_isval[fd] = false;
+
+		// update fdt_maxidx
+		while (--idx >2) {
+			if (cur->fdt[idx].fety->file != NULL)
+				cur->fdt_maxidx = idx;
+				break;
+		}
+	} else
+		cur->fdt[idx].fd_refcnt--;
+}
+
+/* 
+ * newfd가 가리키는 file을 닫고 oldfd의 file을 newfd가 가리키도록 바꿈
+ * oldfd가 없는 경우 return -1, 성공하면 newfd return
+ */
+int dup2(int oldfd, int newfd) 
+{
+	struct thread *cur = thread_current();
+	struct file *old_file = find_file(oldfd, cur);
+	if (!old_file)
+		return;
+	
+	if (oldfd == newfd)
+		return;
+
+	close(newfd);
+	
 }

@@ -157,10 +157,7 @@ __do_fork(void *aux)
 
 	// duplicate fdt & file
 	process_init();
-	for (int i = 3; i <= parent->fdt_maxfd; i++)
-		if (parent->fdt[i] != NULL)
-			current->fdt[i] = file_duplicate(parent->fdt[i]);
-	current->fdt_maxfd = parent->fdt_maxfd;
+	process_duplicate_fdt(parent, current);
 
 	/* Finally, switch to the newly created process. */
 	sema_up(&parent->fork_sema);
@@ -169,9 +166,24 @@ __do_fork(void *aux)
 error:
 	// 실패한 경우 엄마를 깨우고 tid error를 전달하기 위해 list_remove
 	current->exit_status = -1;		
-	list_remove(&current->fork_elem); 	
+	list_remove(&current->fork_elem);
+	current->fork_elem.prev = NULL;	
 	sema_up(&parent->fork_sema);
 	thread_exit();
+}
+
+/* fdt와 관련된 fdt, fd_val, fd_isval, fd_maxidx를 cpy */
+void process_duplicate_fdt(struct thread *parent, struct thread *child)
+{	
+	memcpy(child->fdt, parent->fdt, PGSIZE * 2);
+	for (int i = 0; i <= parent->fdt_maxidx; i++) {
+		if (parent->fdt[i].fety->file != NULL) {
+			if (parent->fdt[i].fd_val > 2)
+				child->fdt[i].fety->file = file_duplicate(parent->fdt[i].fety->file);
+		}
+	}
+	memcpy(child->fd_isval, parent->fd_isval, PGSIZE);
+	child->fdt_maxidx = parent->fdt_maxidx;
 }
 
 /* Switch the current execution context to the f_name.
@@ -201,6 +213,7 @@ int process_exec(void *f_name)
 		ret_ptr = strtok_r(NULL, " ", &next_ptr);
 	}
 	
+	/* file load from disk */
 	if (!load(argv[0], &_if)){
 		palloc_free_page(file_name);
 		return -1;
@@ -252,6 +265,30 @@ void argument_passing(char *argv[], struct intr_frame *_if, int argc)
 	memset(_if->rsp, 0, 8);		// padding start of argv ptr 
 }
 
+/* thread의 fdt와 fd_val를 초기화 성공유무 return*/
+bool process_fdt_init(struct thread *t)
+{
+	t->fdt = palloc_get_multiple(PAL_ZERO, 3);
+	t->fd_isval = palloc_get_page(PAL_ZERO);
+	if (t->fdt == NULL || t->fd_isval == NULL) {
+		palloc_free_multiple(t->fdt, 2);
+		palloc_free_page(t);
+		return false;
+	}
+	for (int i = 0; i < PGSIZE / sizeof(int *); i++)
+		t->fdt[i].fd_val = -1;
+
+	// defalut fd setting
+	struct file *dummy_ptr[3] = {stdin_ptr, stdout_ptr, stderr_ptr};
+	for (int i =0; i<=2; i++) {
+		t->fdt[i].fety->file = dummy_ptr[i];
+		t->fdt[i].fd_val = i;
+		t->fd_isval[i] = true;
+	}
+	t->fdt_maxidx = 2;
+	return true;
+}
+
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
  * exception), returns -1.  If TID is invalid or if it was not a
@@ -270,26 +307,23 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
 	process_cleanup();
-	struct thread *parent, *curr = thread_current();	
-	struct list_elem *curr_elem = &curr->fork_elem;
+	struct thread *cur = thread_current();	
+	struct list_elem *cur_elem = &cur->fork_elem;
 
 	// close open file which is loaded from process.c (denying write on executables)
-	if (curr->opend_file)
-		file_close(curr->opend_file);	
+	file_close(cur->opend_file);	
 
-	// delete fdt and file
-	for (int i = 3; i <= curr->fdt_maxfd; i++)
-		file_close(curr->fdt[i]);	
-	palloc_free_page(curr->fdt);	
-	
-	// finding waiting parent thread to give exit_status
-	while (curr_elem->prev != NULL)
-		curr_elem = curr_elem->prev;
-	
-	if (curr_elem != &curr->fork_elem){		
-		parent = list_entry(curr_elem, struct thread, fork_list.head);
-		sema_up(&curr->wait_sema);
-		sema_down(&curr->fork_sema);		// to give exit status
+	// delete fdt and file (it should be out of process_cleanup())
+	for (int i = 0; i <= cur->fdt_maxidx; i++) 
+		if (cur->fdt[i].fd_val > 2)
+			file_close(cur->fdt[i].fety->file);	
+	palloc_free_multiple(cur->fdt, 2);	
+	palloc_free_page(cur->fd_isval);	
+
+	// give exit_status to parent thread
+	if (cur_elem->prev != NULL) {		
+		sema_up(&cur->wait_sema);	
+		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
 	}			
 }
 
@@ -298,7 +332,6 @@ static void
 process_cleanup(void)
 {
 	struct thread *curr = thread_current();
-
 	// avoid deadlock
 	if (filesys_lock.holder == curr)
 		lock_release(&filesys_lock);

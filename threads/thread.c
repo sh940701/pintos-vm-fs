@@ -245,10 +245,8 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	if ((t->fdt = palloc_get_page(PAL_USER | PAL_ZERO)) == NULL) {
-		palloc_free_page(t);
+	if (!process_fdt_init(t))
 		return TID_ERROR;
-	}
 	list_push_back(&thread_current()->fork_list, &t->fork_elem);
 #endif
 
@@ -598,7 +596,6 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->nice = 0;
 	t->recent_cpu = 0;
-	t->fdt_maxfd = 2;
 	t->exit_status = 123456789;
 	t->opend_file = NULL;
 	t->pml4 = NULL;

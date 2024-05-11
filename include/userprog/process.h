@@ -9,4 +9,6 @@ int process_exec (void *f_name);
 int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
+bool process_fdt_init(struct thread *t);
+void process_duplicate_fdt(struct thread *parent, struct thread *child);
 #endif /* userprog/process.h */

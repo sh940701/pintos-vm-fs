@@ -20,6 +20,11 @@ enum thread_status
 	THREAD_DYING	/* About to be destroyed. */
 };
 
+struct fdt {
+	struct file_entry *fety;
+	int fd_val;
+};
+
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -104,8 +109,9 @@ struct thread
 	uint64_t *pml4; /* Page map level 4 */
 
 	/* System Call */
-	struct file **fdt;
-	int fdt_maxfd;
+	struct fdt *fdt;
+	bool *fd_isval;		// for finding smallest fd in syscall open()
+	int fdt_maxidx;
 	struct semaphore fork_sema;
 	struct semaphore wait_sema;
 	struct list fork_list;
