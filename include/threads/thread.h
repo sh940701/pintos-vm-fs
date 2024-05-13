@@ -20,9 +20,30 @@ enum thread_status
 	THREAD_DYING	/* About to be destroyed. */
 };
 
-struct fdt {
+#define MAX_FETY 126
+
+struct fdt 
+{
 	struct file_entry *fety;
-	int fd_val;
+	uint64_t fd;
+};
+
+struct file_entry
+{
+	struct file *file;
+	uint64_t refc;
+};
+
+struct fpage {
+    struct list_elem elem;
+    int s_ety;          // first empty offset
+    int s_elem;         // first elem offset
+    int e_elem;         // last elem offset + 1
+    uint64_t page_diff;       // ptr diff new fetpage which has been duped
+    union data {
+        struct fdt fdt[MAX_FETY];
+        struct file_entry fet[MAX_FETY];
+    } d;
 };
 
 /* Thread identifier type.
@@ -109,16 +130,15 @@ struct thread
 	uint64_t *pml4; /* Page map level 4 */
 
 	/* System Call */
-	struct fdt *fdt;
-	bool *fd_isval;		// for finding smallest fd in syscall open()
-	int fdt_maxidx;
-	struct semaphore fork_sema;
-	struct semaphore wait_sema;
-	struct list fork_list;
-	struct list_elem fork_elem;
-	int exit_status;
-	struct intr_frame temp_tf;
-	struct file *opend_file; 
+	struct list fdt_list;					// open
+	struct list fet_list;					// dup
+	struct semaphore fork_sema;				// fork
+	struct semaphore wait_sema;				// wait
+	struct list fork_list;					// wait
+	struct list_elem fork_elem;				// wait
+	int exit_status;						// exit
+	struct intr_frame temp_tf;				// fork
+	struct file *opend_file; 				// load
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

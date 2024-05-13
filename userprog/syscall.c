@@ -39,12 +39,22 @@ struct file
 	bool deny_write;	 /* Has file_deny_write() been called? */
 };
 
+struct func_params
+{	
+	int fd;
+	int offset;
+	struct fpage *find_page;
+	struct file *file;
+};
+
 /* if access to filesys.c, should sync */
 struct lock filesys_lock;
 void *stdin_ptr;
 void *stdout_ptr;
 void *stderr_ptr;
-struct list fetable;
+
+typedef enum {FILE, FETY} file_type;
+typedef enum {OPEN, CLOSE, DUP2} call_type;
 
 /* system call */
 pid_t fork(const char *thread_name);
@@ -54,8 +64,8 @@ bool create(const char *file, unsigned initial_size);
 bool remove(const char *file);
 int open(const char *file);
 int filesize(int fd);
-int read(int fd, void *buffer, unsigned length);
-int write(int fd, const void *buffer, unsigned length);
+int read(int fd, void *buffer, unsigned size);
+int write(int fd, const void *buffer, unsigned size);
 void seek(int fd, unsigned position);
 unsigned tell(int fd);
 void close(int fd);
@@ -63,7 +73,10 @@ int process_exec(void *f_name);
 void syscall_handler(struct intr_frame *);
 struct thread *find_child(pid_t pid, struct list *fork_list);
 int dup2(int oldfd, int newfd);
-struct file *find_file(int fd, struct thread *t);
+bool set_entity_in_page(struct func_params *params, struct thread *t, call_type type);
+struct fpage *add_page_to_list(struct list *ls);
+bool find_file_in_page(struct func_params *params, struct list *ls);
+void update_offset(struct fpage *table, int i, call_type type);
 
 void syscall_init(void)
 {
@@ -77,10 +90,9 @@ void syscall_init(void)
 	write_msr(MSR_SYSCALL_MASK,
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 	lock_init(&filesys_lock);
-	list_init(&fetable);
 	stdin_ptr = (0x123456780);
-	stdout_ptr = stdin_ptr+1;
-	stderr_ptr = stdin_ptr+2;
+	stdout_ptr = stdin_ptr + 8;
+	stderr_ptr = stdin_ptr + 16;
 }
 
 /* The main system call interface */
@@ -169,28 +181,132 @@ struct thread *find_child(pid_t pid, struct list *fork_list)
 	return NULL;
 }
 
-/* fdt를 search하여 file_ptr return, 못찾으면 NULL return */
-struct file *find_file(int fd, struct thread *t)
+/* 
+ * 모든 page를 traverse하며, table arr에서 file을 찾으면 true return, 못찾으면 false return 
+ * params에 찾은 file과 fdt_page, offset에 저장, 입력시 fd에 +1해야 됨
+ */ 
+bool find_file_in_page(struct func_params *params, struct list *ls)
 {	
-	struct fdt *cur_fdt = t->fdt;
-
-	for (int i = 0; i <= t->fdt_maxidx; i++)
-		if (cur_fdt[i].fd_val == fd)
-			return cur_fdt[i].fety->file;
-	return NULL;
+	struct fpage *table;
+	struct list_elem *start_elem = list_head(ls);
+	int i;
+	while ((start_elem = list_next(start_elem)) != list_tail(ls)) {
+		table = list_entry(start_elem, struct fpage, elem);
+		for (i = table->s_elem; i < table->e_elem; i++) 
+			if (table->d.fdt[i].fd == params->fd){
+				params->file = table->d.fdt[i].fety->file;
+				params->find_page = table;
+				params->offset = i;
+				return true;
+			}
+	}
+	return false;
 }
 
-/* fetable를 traverse하며 file에 해당하는 file_entry return, 못찾으면 NULL return */
-struct file_entry *find_file_entry(struct file *find_f)
-{	
-	struct file_entry *fety;
-	struct list_elem *start_elem = list_head(&fetable);
-	while ((start_elem = list_next(start_elem)) != list_tail(&fetable)) {
-		fety = list_entry(start_elem, struct file_entry, elem);
-		if (fety->file == find_f) 
-			return fety;
+/* list에 빈 page가 없는경우 사용, page를 ls에 추가한 뒤 0으로 초기화*/
+struct fpage *add_page_to_list(struct list *ls) {
+    struct fpage *newpage = palloc_get_page(PAL_ZERO);
+    if (newpage == NULL) 
+        return NULL;
+    list_push_back(ls, &newpage->elem);
+	return newpage;
+}
+
+/* page search를 빠르게 하기 위해 offset update하는 함수 */
+void update_offset(struct fpage *table, int i, call_type type)
+{
+	if (type == OPEN) {
+		table->s_ety = (i < MAX_FETY) ? i+1 : i;
+		table->s_elem = (i < table->s_elem) ? i : table->s_elem;
+		table->e_elem = (i == table->e_elem) && (i < MAX_FETY) ? i + 1 : table->e_elem;	
+	} else if (type == CLOSE) {
+		table->s_ety = (i < table->s_ety) ? i : table->s_ety;
+		table->s_elem =  (i == table->s_elem) && (i < MAX_FETY) ? i + 1 : table->s_elem;
+		table->e_elem = (i + 1 == table->e_elem) ? i : table->e_elem;
 	}
-	return NULL;
+}
+
+/* 
+ * call 함수에 따라 fet_list와 fdt_list를 순회하면서 file과 file_entry를 제거 or 추가, 성공여부 return 
+ * params에 찾을 label을 지정하면 이 후 결과를 params에 저장, 입력시 fd에 +1해야됨, 출력시 fd값 그대로 return
+ * (참고 속도 향상을 위해 fd 할당 정책을 수정함, dup2를 사용하는 경우 가장 낮은 fd를 open하는게 아님)
+ */
+bool set_entity_in_page(struct func_params *params, struct thread *t, call_type type)
+{
+	struct fpage *fet_table, *fdt_table;
+	struct file_entry *new_fety = NULL;
+	struct fdt *new_fdt = NULL;
+	struct list_elem *start_elem = list_head(&t->fet_list);
+	int i, new_fd = 0;
+	while (type == OPEN) {	// make fety first
+		start_elem = list_next(start_elem);
+		if (start_elem == list_tail(&t->fet_list)) {	// add page 
+			if ((fet_table = add_page_to_list(&t->fet_list)) == NULL)	
+				return false;
+		} else
+			fet_table = list_entry(start_elem, struct fpage, elem);
+
+		for (i = fet_table->s_ety; i <= fet_table->e_elem; i++) {
+			new_fety = &fet_table->d.fet[i];
+			if (new_fety->file == NULL) {
+				new_fety->file = params->file;
+				new_fety->refc++;
+				update_offset(fet_table, i, OPEN);
+				break;
+			}
+		}
+		if (new_fety->file == params->file)
+			break;
+	}
+
+	start_elem = list_head(&t->fdt_list);
+	while (1) {
+		start_elem = list_next(start_elem);
+		if (start_elem == list_tail(&t->fdt_list)){	 // add page
+			if ((type == CLOSE) || ((fdt_table = add_page_to_list(&t->fdt_list)) == NULL))
+				return false;
+		} else
+			fdt_table = list_entry(start_elem, struct fpage, elem);
+
+		switch (type)
+		{
+		case OPEN:	// make fdt and connect to fety
+			for (i = fdt_table->s_ety; i <= fdt_table->e_elem; i++) {
+				new_fdt = &fdt_table->d.fdt[i];
+				if (new_fdt->fety == NULL) {
+					new_fdt->fety = new_fety;
+					new_fdt->fd = new_fd + i + 1;	
+					params->fd = new_fd + i;
+					update_offset(fdt_table, i, OPEN);
+					return true;
+				}
+			}
+			new_fd += MAX_FETY;
+			break;
+		case CLOSE:	// disable fdt and fety, only if ret == 0, delete fet
+			for (i = fdt_table->s_elem; i < fdt_table->e_elem; i++){
+				new_fdt = &fdt_table->d.fdt[i];
+				if (new_fdt->fd == params->fd) {
+					new_fety = new_fdt->fety;
+					if (--new_fety->refc == 0){
+						if (is_user_vaddr(new_fety->file)) continue;
+						file_close(new_fety->file);
+						new_fety->file = NULL;
+						fet_table = pg_round_down(new_fety);
+						update_offset(fet_table, i, CLOSE);
+					}
+					new_fdt->fety = NULL;
+					new_fdt->fd = 0;
+
+					params->find_page = fdt_table;
+					params->offset = i;
+					update_offset(fdt_table, i, CLOSE);
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 /* power_off로 kenel process(qemu)종료 */
@@ -206,7 +322,6 @@ void exit(int status)
 	curr->exit_status = status;
 	if (strcmp(curr->name, "main"))
 		printf("%s: exit(%d)\n", curr->name, status);
-	//printf("%s max fd : %d\n", thread_current()->name, thread_current()->fdt_maxfd);	
 	thread_exit();
 }
 
@@ -276,45 +391,36 @@ bool remove(const char *file)
 }
 
 /*
- * 잘못된 파일 이름을 가지거나 disk에 파일이 없거나 MAX_FD(512) 넘어가는 경우 -1 반환.
- * thread 내에 file_entry ptr와 가능한 가장 낮은 fd 값을 저장한 뒤, fd 값을 반환.
+ * 잘못된 파일 이름을 가지거나 disk에 파일이 없는 경우 -1 반환.
+ * file_entry를 fet_list에서 없는 경우 (메모리 부족한 경우 page 추가 하여) fety 생성.
+ * thread 내에 file_entry와 fdt를 만들어 (dup2를 안한다면 가장 낮은) fd 값을 저장한 뒤, fd 값을 반환.
  */
 int open(const char *file)
 {
 	check_address(file);
 	struct file *file_entity = filesys_open(file);
-	if (file_entity == NULL) 	// wrong file name or not in disk (initialized from arg -p)
+	if (file_entity == NULL) 	// wrong file name or oom or not in disk (initialized from arg -p)
 		return -1;
-
-	// initialize
-	struct thread *cur = thread_current();
-	int fd = 0;
-	for (int i = 0; i < MAX_FD; i++)
-	{
-		if (cur->fdt[i].fety == NULL)
-		{
-			// find smallest possible fd (fd range in (0, 512))
-			for (fd = 0; fd < MAX_FD; fd++)		
-				if (!cur->fd_isval[fd])
-					break;
-
-			cur->fd_isval[fd] = true;
-			cur->fdt[i] = (struct fdt){file_entity, fd};
-			cur->fdt_maxidx = (cur->fdt_maxidx < i) ? i : cur->fdt_maxidx;
-			return fd;
-		}
+	// find file_entry
+	struct func_params params;
+	params.file = file_entity;
+	params.fd = 0;
+	if (!set_entity_in_page(&params, thread_current(), OPEN)) {
+		free(file_entity);
+		return -1;
 	}
-	free(file_entity);
-	return -1;
+	return params.fd;
 }
 
 /* fd에 해당하는 file의 크기 return */
 int filesize(int fd)
 {
-	struct thread *cur = thread_current();
-	struct file *cur_file = find_file(fd, cur);
-	ASSERT(cur_file);
-
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+	if (is_user_vaddr(cur_file)) return -1;
 	return file_length(cur_file);
 }
 
@@ -322,23 +428,26 @@ int filesize(int fd)
  * fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환
  * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음
  */
-int read(int fd, void *buffer, unsigned length)
+int read(int fd, void *buffer, unsigned size)
 {
-	struct thread *cur = thread_current();
-	struct file *cur_file = find_file(fd, cur);	
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
 	
-	if (cur_file == NULL)  // wrong fd
+	if (cur_file != stdin_ptr && is_user_vaddr(cur_file))  // wrong fd
 		return -1;
 
-	if (length == 0) // not read
+	if (size == 0) // not read
 		return 0;
 
 	check_address(buffer);
-	int bytes_read = length;
+	int bytes_read = size;
 	if (cur_file == stdin_ptr)
 	{
 		uint8_t byte;
-		while (length--)
+		while (size--)
 		{
 			byte = input_getc();	  // console 입력을 받아
 			*(char *)buffer++ = byte; // 1byte씩 저장
@@ -348,7 +457,7 @@ int read(int fd, void *buffer, unsigned length)
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
-		if ((bytes_read = file_read(cur_file, buffer, length)) == 0)  // could not read
+		if ((bytes_read = file_read(cur_file, buffer, size)) == 0)  // could not read
 			return -1;
 	}
 	return bytes_read;
@@ -358,33 +467,37 @@ int read(int fd, void *buffer, unsigned length)
  * fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환
  * 참고 : disk write에 lock이 걸려있음
  */
-int write(int fd, const void *buffer, unsigned length)
+int write(int fd, const void *buffer, unsigned size)
 {
 	struct thread *cur = thread_current();	
-	struct file *cur_file = find_file(fd, cur);	
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &cur->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
 	
-	if (cur_file == NULL)  // no bytes could be written at all
+	if (cur_file == NULL || cur_file == stdin_ptr)  // no bytes could be written at all
 		return 0;
 	
 	check_address(buffer);
-	int bytes_write = length;
+	int bytes_write = size;
 	if (cur_file == stdout_ptr) // stdout: lock을 걸고 buffer 전체를 입력
 	{
-		int iter_cnt = length / MAX_STDOUT + 1;
+		int iter_cnt = size / MAX_STDOUT + 1;
 		int less_size;
 		while (iter_cnt--)
-		{ // 입력 buffer가 512보다 큰경우 slicing 해서 출력 (for test)
-			less_size = (length > MAX_STDOUT) ? MAX_STDOUT : length;
+		{ // 입력 buffer가 512보다 큰경우 slicing 해서 출력 
+			less_size = (size > MAX_STDOUT) ? MAX_STDOUT : size;
 			putbuf(buffer, less_size);
 			buffer += less_size;
-			length -= MAX_STDOUT;
+			size -= MAX_STDOUT;
 		}
 	} else if (cur_file == stderr_ptr) // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
-		while (length-- > 0)
+		while (size-- > 0)
 			putchar(buffer++);
 
 	else  // file growth is not implemented by the basic file system
-		bytes_write = file_write(cur_file, buffer, length);
+		bytes_write = file_write(cur_file, buffer, size);
 	return bytes_write;
 }
 
@@ -394,69 +507,77 @@ int write(int fd, const void *buffer, unsigned length)
  */
 void seek(int fd, unsigned position)
 {
-	struct thread *cur = thread_current();
-	struct file *cur_file = find_file(fd, cur);
-	ASSERT(cur_file);
-
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+	if (is_user_vaddr(cur_file)) return;
 	file_seek(cur_file, position);
 }
 
 /* 현재 파일을 읽는 위치 return */
 unsigned tell(int fd)
 {
-	struct thread *cur = thread_current();
-	struct file *cur_file = find_file(fd, cur);
-	ASSERT(cur_file);
-
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+	if (is_user_vaddr(cur_file)) return -1;
 	return file_tell(cur_file);
 }
 
-/* fd에 해당하는 file을 close, fd_isval, fd_val, fdt을 같이 갱신*/
+/* fd에 해당하는 file를 close, file_entry를 NULL로 초기화 */
 void close(int fd)
 {
-	struct thread *cur = thread_current();
-	int idx;
-	// find fd_idx
-	for (idx = 0; idx <= cur->fdt_maxidx; idx++)
-		if (cur->fdt[idx].fd_val == fd)
-			break;
-	
-	struct file *cur_file = cur->fdt[idx].fety->file;
-	if (cur_file == NULL)
-		return;
-	file_close(cur_file);
-
-	// disable fd
-	if (cur->fdt[idx].fd_refcnt == 1) {
-		cur->fdt[idx] = (struct fdt) {NULL, -1, 0};
-
-		if (fd < MAX_FD)
-			cur->fd_isval[fd] = false;
-
-		// update fdt_maxidx
-		while (--idx >2) {
-			if (cur->fdt[idx].fety->file != NULL)
-				cur->fdt_maxidx = idx;
-				break;
-		}
-	} else
-		cur->fdt[idx].fd_refcnt--;
+	struct func_params params;
+	params.fd = fd + 1;
+	set_entity_in_page(&params, thread_current(), CLOSE);
 }
 
 /* 
- * newfd가 가리키는 file을 닫고 oldfd의 file을 newfd가 가리키도록 바꿈
+ * newfd가 가리키는 file을 닫고 oldfd의 fety을 newfd의 fety가 가리키도록 바꿈
  * oldfd가 없는 경우 return -1, 성공하면 newfd return
  */
 int dup2(int oldfd, int newfd) 
-{
-	struct thread *cur = thread_current();
-	struct file *old_file = find_file(oldfd, cur);
-	if (!old_file)
-		return;
-	
-	if (oldfd == newfd)
-		return;
+{	
+	struct thread *t = thread_current();
+	struct func_params params;
+	params.fd = oldfd + 1;
+	if (!find_file_in_page(&params, &t->fdt_list))
+		return -1;
 
-	close(newfd);
-	
+	if (oldfd == newfd)
+		return newfd;
+	struct file_entry *new_fety = params.find_page->d.fdt[params.offset].fety;
+	new_fety->refc++;
+	params.fd = newfd + 1;
+	// newfd가 원래 존재하는 경우
+	if (set_entity_in_page(&params, t, CLOSE)){ 
+		params.find_page->d.fdt[params.offset].fety = new_fety;
+		params.find_page->d.fdt[params.offset].fd = newfd + 1;
+	}
+	else // newfd에 해당하는 fdt를 새롭게 생성 
+	{	
+		struct fpage *fdt_table;
+		struct fdt *new_fdt = NULL;
+		struct list_elem *start_elem = list_head(&t->fdt_list);
+		while (1) {
+			if ((start_elem = list_next(start_elem)) == list_tail(&t->fdt_list))	 // add page
+				if ((fdt_table = add_page_to_list(&t->fdt_list)) == NULL)
+					return -1;
+			fdt_table = list_entry(start_elem, struct fpage, elem);
+			for (int i = fdt_table->s_ety; i <= fdt_table->e_elem; i++) {
+				new_fdt = &fdt_table->d.fdt[i];
+				if (new_fdt->fety == NULL) {
+					new_fdt->fety = new_fety;
+					new_fdt->fd = newfd + 1;
+					update_offset(fdt_table, i, OPEN);
+					return newfd;
+				}
+			}
+		}
+	}
+	return newfd;
 }

@@ -157,7 +157,9 @@ __do_fork(void *aux)
 
 	// duplicate fdt & file
 	process_init();
-	process_duplicate_fdt(parent, current);
+	process_delete_fdt(current);
+	if (!process_duplicate_fdt(parent, current))
+		goto error;
 
 	/* Finally, switch to the newly created process. */
 	sema_up(&parent->fork_sema);
@@ -172,19 +174,6 @@ error:
 	thread_exit();
 }
 
-/* fdt와 관련된 fdt, fd_val, fd_isval, fd_maxidx를 cpy */
-void process_duplicate_fdt(struct thread *parent, struct thread *child)
-{	
-	memcpy(child->fdt, parent->fdt, PGSIZE * 2);
-	for (int i = 0; i <= parent->fdt_maxidx; i++) {
-		if (parent->fdt[i].fety->file != NULL) {
-			if (parent->fdt[i].fd_val > 2)
-				child->fdt[i].fety->file = file_duplicate(parent->fdt[i].fety->file);
-		}
-	}
-	memcpy(child->fd_isval, parent->fd_isval, PGSIZE);
-	child->fdt_maxidx = parent->fdt_maxidx;
-}
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
@@ -265,28 +254,114 @@ void argument_passing(char *argv[], struct intr_frame *_if, int argc)
 	memset(_if->rsp, 0, 8);		// padding start of argv ptr 
 }
 
-/* thread의 fdt와 fd_val를 초기화 성공유무 return*/
-bool process_fdt_init(struct thread *t)
+/* stdin, stdout, stderr를 기본 생성 */
+bool process_init_fdt(struct thread *t)
 {
-	t->fdt = palloc_get_multiple(PAL_ZERO, 3);
-	t->fd_isval = palloc_get_page(PAL_ZERO);
-	if (t->fdt == NULL || t->fd_isval == NULL) {
-		palloc_free_multiple(t->fdt, 2);
+	struct fpage *fdt_page = palloc_get_page(PAL_ZERO);
+	struct fpage *fet_page = palloc_get_page(PAL_ZERO);
+	if (fdt_page == NULL || fet_page == NULL) {
+		palloc_free_page(fdt_page);
+		palloc_free_page(fet_page);
 		palloc_free_page(t);
 		return false;
 	}
-	for (int i = 0; i < PGSIZE / sizeof(int *); i++)
-		t->fdt[i].fd_val = -1;
-
+	list_push_front(&t->fdt_list, &fdt_page->elem);
+	list_push_front(&t->fet_list, &fet_page->elem);
 	// defalut fd setting
 	struct file *dummy_ptr[3] = {stdin_ptr, stdout_ptr, stderr_ptr};
-	for (int i =0; i<=2; i++) {
-		t->fdt[i].fety->file = dummy_ptr[i];
-		t->fdt[i].fd_val = i;
-		t->fd_isval[i] = true;
+	for (int i = 0; i <= 2; i++) {
+		fet_page->d.fet[i].file = dummy_ptr[i];
+		fet_page->d.fet[i].refc++;
+		fdt_page->d.fdt[i].fety = &fet_page->d.fet[i];
+		fdt_page->d.fdt[i].fd = i+1;
 	}
-	t->fdt_maxidx = 2;
+	fdt_page->s_ety = 3;
+	fdt_page->e_elem = 3;
+	fet_page->s_ety = 3;
+	fet_page->e_elem = 3;
 	return true;
+}
+
+/* 
+ * fdt와 관련된 fdt_list와 fet_list안의 page들과 file들을 자식에게 cpy 
+ * duplicate한 file과 copy한 file_entry_page를 가리키도록 재설정
+ * fdt_page와 fet_page간 같은 위계를 가지도록 새롭게 만든 page와 이전 page간의 차이를 계산하여 ptr 초기화
+ */
+bool process_duplicate_fdt(struct thread *parent, struct thread *child)
+{	
+	struct fpage *nfdt_page, *ofdt_page, *nfet_page, *ofet_page;
+	struct file *new_file; 
+	struct file_entry *file_ety;
+	struct fdt *new_fdt;
+	struct list_elem *start_elem = list_head(&parent->fet_list);
+	
+	// duplicate file in pages of fet_list
+	while ((start_elem = list_next(start_elem)) != list_tail(&parent->fet_list)) {
+		// make new fet_page
+		ofet_page = list_entry(start_elem, struct fpage, elem);	
+		if ((nfet_page = palloc_get_page(PAL_ZERO)) == NULL)
+			return false;
+		memcpy(nfet_page, ofet_page, PGSIZE);
+		list_push_back(&child->fet_list, &nfet_page->elem);
+		ofet_page->page_diff = (uint64_t)nfet_page - (uint64_t)ofet_page;	// memorize diff for updating ptr in new_fdt
+
+		// duplicate file
+		for (int i = nfet_page->s_elem; i < nfet_page->e_elem; i++) {
+			file_ety = &nfet_page->d.fet[i];
+			if (is_user_vaddr(file_ety->file)) 	continue; // skip stdin, stdout, stderr
+			if ((new_file = file_duplicate(file_ety->file)) == NULL)
+				return false;
+			file_ety->file = new_file;
+		}
+	}
+
+	// cpy fdt_list and fet_list
+	start_elem = list_head(&parent->fdt_list);
+	while ((start_elem = list_next(start_elem)) != list_tail(&parent->fdt_list)) {
+		// make new fdt_page  
+		ofdt_page = list_entry(start_elem, struct fpage, elem);
+		if ((nfdt_page = palloc_get_page(PAL_ZERO)) == NULL)
+			return false;
+		memcpy(nfdt_page, ofdt_page, PGSIZE);
+		list_push_back(&child->fdt_list, &nfdt_page->elem);
+
+		// initialize fdt_page ptr to direct new fet_page
+		for (int i = nfdt_page->s_elem; i < nfdt_page->e_elem; i++) {
+			new_fdt = &nfdt_page->d.fdt[i];
+			if (is_user_vaddr(new_fdt->fety)) continue;
+			ofet_page = pg_round_down(new_fdt->fety);
+			new_fdt->fety = (uint64_t)new_fdt->fety + ofet_page->page_diff;
+		}
+	}
+	return true;
+}
+
+/* fdt와 관련된 fdt_list와 fet_list안의 page들과 file들을 free */
+bool process_delete_fdt(struct thread *t)
+{
+	struct fpage *table;
+	struct file *cur_file;
+	struct list_elem *elem;
+	int length = list_size(&t->fdt_list);
+	// fdt page free
+	while (length--) {
+		elem = list_pop_front(&t->fdt_list);
+		table = list_entry(elem, struct fpage, elem);
+		palloc_free_page(table);
+	}
+	// fet page free
+	length = list_size(&t->fet_list);
+	while (length--) {
+		elem = list_pop_front(&t->fet_list);
+		table = list_entry(elem, struct fpage, elem);
+		// file free
+		for (int i = table->s_elem; i < table->e_elem; i++) {
+			cur_file = table->d.fet[i].file;
+			if (is_user_vaddr(cur_file)) continue; // skip null or stdin, stdout, stderr
+			file_close(cur_file);
+		}
+		palloc_free_page(table);
+	}
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -308,20 +383,14 @@ void process_exit(void)
 {
 	process_cleanup();
 	struct thread *cur = thread_current();	
-	struct list_elem *cur_elem = &cur->fork_elem;
-
 	// close open file which is loaded from process.c (denying write on executables)
 	file_close(cur->opend_file);	
 
 	// delete fdt and file (it should be out of process_cleanup())
-	for (int i = 0; i <= cur->fdt_maxidx; i++) 
-		if (cur->fdt[i].fd_val > 2)
-			file_close(cur->fdt[i].fety->file);	
-	palloc_free_multiple(cur->fdt, 2);	
-	palloc_free_page(cur->fd_isval);	
+	process_delete_fdt(cur);
 
 	// give exit_status to parent thread
-	if (cur_elem->prev != NULL) {		
+	if (cur->fork_elem.prev != NULL) {		
 		sema_up(&cur->wait_sema);	
 		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
 	}			

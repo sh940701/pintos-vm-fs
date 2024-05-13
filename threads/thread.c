@@ -245,7 +245,7 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	if (!process_fdt_init(t))
+	if (!process_init_fdt(t))
 		return TID_ERROR;
 	list_push_back(&thread_current()->fork_list, &t->fork_elem);
 #endif
@@ -594,23 +594,28 @@ init_thread(struct thread *t, const char *name, int priority)
 	strlcpy(t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *);
 	t->priority = priority;
-	t->nice = 0;
-	t->recent_cpu = 0;
+	/* system call */
 	t->exit_status = 123456789;
 	t->opend_file = NULL;
 	t->pml4 = NULL;
 	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
+	list_init(&t->fdt_list);
+	list_init(&t->fet_list);
 
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
 	t->magic = THREAD_MAGIC;
 
-	/* for donation */
+	/* priority scheduling */
 	t->init_priority = priority;
 	t->wait_on_lock = NULL;
 	list_init(&t->donations);
 	list_init(&t->fork_list);
+	/* advanced scheduler */ 
+	t->nice = 0;					
+	t->recent_cpu = 0;
+	
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
