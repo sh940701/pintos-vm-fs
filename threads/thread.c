@@ -13,6 +13,8 @@
 #include "intrinsic.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "userprog/syscall.h"
+#include "filesys/file.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -72,6 +74,7 @@ static void init_thread(struct thread *, const char *name, int priority);
 static void do_schedule(int status);
 static void schedule(void);
 static tid_t allocate_tid(void);
+void fillock_release(void);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -118,7 +121,6 @@ void thread_init(void)
 	list_init(&ready_list);
 	list_init(&destruction_req);
 	list_init(&sleep_list);
-	list_init(&thread_list);
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread();
@@ -127,6 +129,7 @@ void thread_init(void)
 	initial_thread->tid = allocate_tid();
 	if (thread_mlfqs)
 	{
+		list_init(&thread_list);
 		mlfq_cal_priority(initial_thread);
 	}
 }
@@ -173,6 +176,7 @@ void thread_tick(void)
 		intr_yield_on_return();
 }
 
+/* Time_freq마다 recent_cpu, load_avg 갱신, 4tick마다 priority갱신 후 우선 순위 선점*/
 void mlfq_scheduler(struct thread *t)
 {
 	struct thread *tar_t;
@@ -241,7 +245,9 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
+	if (!process_init_fdt(t))
+		return TID_ERROR;
+	list_push_back(&thread_current()->fork_list, &t->fork_elem);
 #endif
 
 	/* Call the kernel_thread if it scheduled.
@@ -261,7 +267,7 @@ tid_t thread_create(const char *name, int priority,
 		t->recent_cpu = thread_current()->recent_cpu;
 		mlfq_cal_priority(t);
 	}
-
+	
 	/* Add to run queue. */
 	if (t != idle_thread)
 		thread_unblock(t);
@@ -394,15 +400,7 @@ void thread_exit(void)
 	ASSERT(!intr_context());
 
 #ifdef USERPROG
-	process_exit();
-	struct list_elem *curr = &thread_current()->fork_elem;
-	while (curr->prev != NULL)
-		curr = curr->prev;
-	struct thread *parent = list_entry(curr, struct thread, fork_list.head);
-	parent->exit_status = thread_current()->exit_status;
-	sema_up(&parent->wait_sema);
-	list_remove(&thread_current()->fork_elem);
-	
+	process_exit();	
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -596,23 +594,28 @@ init_thread(struct thread *t, const char *name, int priority)
 	strlcpy(t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *);
 	t->priority = priority;
-	t->nice = 0;
-	t->recent_cpu = 0;
-	t->fdt_maxi = 2;
+	/* system call */
 	t->exit_status = 123456789;
-	lock_init(&t->fork_lock);
-	cond_init(&t->fork_cond);
+	t->opend_file = NULL;
+	t->pml4 = NULL;
+	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
+	list_init(&t->fdt_list);
+	list_init(&t->fet_list);
 
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
 	t->magic = THREAD_MAGIC;
 
-	/* for donation */
+	/* priority scheduling */
 	t->init_priority = priority;
 	t->wait_on_lock = NULL;
 	list_init(&t->donations);
 	list_init(&t->fork_list);
+	/* advanced scheduler */ 
+	t->nice = 0;					
+	t->recent_cpu = 0;
+	
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -753,13 +756,6 @@ do_schedule(int status)
 	{
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
-#ifdef USERPROG
-		palloc_free_multiple(victim->fdt, 3);
-		pml4_destroy(victim->pml4);
-		for (int i = 3; i <= victim->fdt_maxi; i++)
-			if (victim->fdt[i] != NULL)
-				file_close(victim->fdt[i]);
-#endif
 		palloc_free_page(victim);
 	}
 	thread_current()->status = status;

@@ -5,6 +5,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "intrinsic.h"
+#include "userprog/syscall.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -85,10 +86,6 @@ kill (struct intr_frame *f) {
 			   expected.  Kill the user process.  */
 			printf ("%s: dying due to interrupt %#04llx (%s).\n",
 					thread_name (), f->vec_no, intr_name (f->vec_no));
-#ifdef USERPROG
-			check_address(f->R.rax);
-			thread_current()->exit_status = -1;
-#endif
 			intr_dump_frame (f);
 			thread_exit ();
 
@@ -154,6 +151,10 @@ page_fault (struct intr_frame *f) {
 	page_fault_cnt++;
 
 	/* If the fault is true fault, show info and exit. */
+#ifdef USERPROG
+	check_address(f->R.rax);
+	thread_current()->exit_status = -1;		// 비정상 종료
+#endif
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
 			fault_addr,
 			not_present ? "not present" : "rights violation",

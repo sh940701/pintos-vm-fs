@@ -20,6 +20,32 @@ enum thread_status
 	THREAD_DYING	/* About to be destroyed. */
 };
 
+#define MAX_FETY 126
+
+struct fdt 
+{
+	struct file_entry *fety;
+	uint64_t fd;
+};
+
+struct file_entry
+{
+	struct file *file;
+	uint64_t refc;
+};
+
+struct fpage {
+    struct list_elem elem;
+    int s_ety;          // first empty offset
+    int s_elem;         // first elem offset
+    int e_elem;         // last elem offset + 1
+    uint64_t page_diff;       // ptr diff new fetpage which has been duped
+    union data {
+        struct fdt fdt[MAX_FETY];
+        struct file_entry fet[MAX_FETY];
+    } d;
+};
+
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -103,17 +129,16 @@ struct thread
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4; /* Page map level 4 */
 
-	/* system call */
-	struct file **fdt;
-	int fdt_maxi;
-	struct condition fork_cond;
-	struct lock fork_lock;
-	struct thread *child_thread;
-
-	struct semaphore wait_sema;
-	struct list fork_list;
-	struct list_elem fork_elem;
-	int exit_status;
+	/* System Call */
+	struct list fdt_list;					// open
+	struct list fet_list;					// dup
+	struct semaphore fork_sema;				// fork
+	struct semaphore wait_sema;				// wait
+	struct list fork_list;					// wait
+	struct list_elem fork_elem;				// wait
+	int exit_status;						// exit
+	struct intr_frame temp_tf;				// fork
+	struct file *opend_file; 				// load
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
@@ -141,8 +166,7 @@ void thread_sleep(int64_t ticks);
 void thread_wakeup(int64_t current_ticks);
 
 /* for priority scheduling */
-typedef enum
-{
+typedef enum {
 	READY_LIST,
 	WAIT_LIST,
 	DONATION_LIST,
@@ -151,6 +175,8 @@ typedef enum
 } typelist;
 void preempt_priority(void);
 bool priority_larger(const struct list_elem *insert_elem, const struct list_elem *cmp_elem, typelist type);
+void update_priority_for_donations(void);
+void thread_readylist_reorder(struct thread *t);
 
 /* for advanced scheduler */
 void mlfq_scheduler(struct thread *t);
