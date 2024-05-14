@@ -137,7 +137,6 @@ struct thread
 	struct list fork_list;					// wait
 	struct list_elem fork_elem;				// wait
 	int exit_status;						// exit
-	struct intr_frame temp_tf;				// fork
 	struct file *opend_file; 				// load
 #endif
 #ifdef VM
