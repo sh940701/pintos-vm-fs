@@ -45,6 +45,7 @@ struct func_params
 	int offset;
 	struct fpage *find_page;
 	struct file *file;
+	struct file_entry *fety;
 };
 
 /* if access to filesys.c, should sync */
@@ -73,8 +74,10 @@ int process_exec(void *f_name);
 void syscall_handler(struct intr_frame *);
 struct thread *find_child(pid_t pid, struct list *fork_list);
 int dup2(int oldfd, int newfd);
-bool set_entity_in_page(struct func_params *params, struct thread *t, call_type type);
-struct fpage *add_page_to_list(struct list *ls);
+bool open_fety_fdt_in_page(struct func_params *params, struct thread *t);
+bool open_fdt_in_page(struct func_params *params, struct thread *t);
+bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t);
+struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls);
 bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
 
@@ -110,7 +113,6 @@ void syscall_handler(struct intr_frame *f)
 			exit(f->R.rdi);
 			break;
 		case SYS_FORK:
-			memcpy(&thread_current()->temp_tf, f, sizeof(struct intr_frame));
 			f->R.rax = fork(f->R.rdi);
 			break;
 		case SYS_EXEC:
@@ -147,7 +149,9 @@ void syscall_handler(struct intr_frame *f)
 			close(f->R.rdi);
 			break;
 		case SYS_DUP2:
+			lock_acquire(&filesys_lock);
 			f->R.rax = dup2(f->R.rdi, f->R.rsi);
+			lock_release(&filesys_lock);
 			break;
 		default:
 			printf("We don't implemented yet.");
@@ -168,7 +172,7 @@ void check_address(void *uaddr)
 		exit(-1);
 }
 
-/* list를 traverse하며 pid를 가지는 thread return, 못찾으면 NULL return */
+/* list를 순회하며 pid를 가지는 thread return, 못찾으면 NULL return */
 struct thread *find_child(pid_t pid, struct list *fork_list)
 {	
 	struct thread *child;
@@ -204,11 +208,14 @@ bool find_file_in_page(struct func_params *params, struct list *ls)
 }
 
 /* list에 빈 page가 없는경우 사용, page를 ls에 추가한 뒤 0으로 초기화*/
-struct fpage *add_page_to_list(struct list *ls) {
-    struct fpage *newpage = palloc_get_page(PAL_ZERO);
-    if (newpage == NULL) 
-        return NULL;
-    list_push_back(ls, &newpage->elem);
+struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls) {
+	struct fpage *newpage = list_entry(elem, struct fpage, elem);
+	if (elem == list_tail(ls)){	 
+		if ((newpage = palloc_get_page(PAL_ZERO)) == NULL) 
+			return NULL;
+
+		list_push_back(ls, &newpage->elem);
+	} 	
 	return newpage;
 }
 
@@ -227,26 +234,22 @@ void update_offset(struct fpage *table, int i, call_type type)
 }
 
 /* 
- * call 함수에 따라 fet_list와 fdt_list를 순회하면서 file과 file_entry를 제거 or 추가, 성공여부 return 
- * params에 찾을 label을 지정하면 이 후 결과를 params에 저장, 입력시 fd에 +1해야됨, 출력시 fd값 그대로 return
- * (참고 속도 향상을 위해 fd 할당 정책을 수정함, dup2를 사용하는 경우 가장 낮은 fd를 open하는게 아님)
+ * fet_list를 순회하면서 file_entry 추가와 open_fdt_in_page호출 후 성공여부 return
+ * 입력시 params에 file 저장, 출력시 fd 저장 
  */
-bool set_entity_in_page(struct func_params *params, struct thread *t, call_type type)
+bool open_fety_fdt_in_page(struct func_params *params, struct thread *t)
 {
 	struct fpage *fet_table, *fdt_table;
 	struct file_entry *new_fety = NULL;
 	struct fdt *new_fdt = NULL;
 	struct list_elem *start_elem = list_head(&t->fet_list);
-	int i, new_fd = 0;
-	while (type == OPEN) {	// make fety first
+	while (1) {	
 		start_elem = list_next(start_elem);
-		if (start_elem == list_tail(&t->fet_list)) {	// add page 
-			if ((fet_table = add_page_to_list(&t->fet_list)) == NULL)	
-				return false;
-		} else
-			fet_table = list_entry(start_elem, struct fpage, elem);
+		if ((fet_table = add_page_to_list(start_elem, &t->fet_list)) == NULL)
+			return false;
 
-		for (i = fet_table->s_ety; i <= fet_table->e_elem; i++) {
+		// make fety first
+		for (int i = fet_table->s_ety; i <= fet_table->e_elem; i++) {
 			new_fety = &fet_table->d.fet[i];
 			if (new_fety->file == NULL) {
 				new_fety->file = params->file;
@@ -259,54 +262,82 @@ bool set_entity_in_page(struct func_params *params, struct thread *t, call_type 
 			break;
 	}
 
-	start_elem = list_head(&t->fdt_list);
+	// params->fd = find_lowest_fd();  // fdt_list 전체 순화하면서 가장 낮은 fd 찾는 함수(미구현)
+	params->fety = new_fety;
+	if (!open_fdt_in_page(params, t))
+		return false;
+	return true;
+}	
+
+/*
+ * fdt_list를 순회하면서 fdt 추가 성공여부 return 
+ * 입력시 params에 fety(fd 선택) 저장, 출력시 fd 저장 
+ */
+bool open_fdt_in_page(struct func_params *params, struct thread *t)
+{
+	struct fpage *fdt_table;
+	struct fdt *new_fdt = NULL;
+	struct list_elem *start_elem = list_head(&t->fdt_list);
+	int new_fd = 0;
 	while (1) {
 		start_elem = list_next(start_elem);
-		if (start_elem == list_tail(&t->fdt_list)){	 // add page
-			if ((type == CLOSE) || ((fdt_table = add_page_to_list(&t->fdt_list)) == NULL))
-				return false;
-		} else
-			fdt_table = list_entry(start_elem, struct fpage, elem);
+		if ((fdt_table = add_page_to_list(start_elem, &t->fdt_list)) == NULL)
+			return false;
 
-		switch (type)
-		{
-		case OPEN:	// make fdt and connect to fety
-			for (i = fdt_table->s_ety; i <= fdt_table->e_elem; i++) {
-				new_fdt = &fdt_table->d.fdt[i];
-				if (new_fdt->fety == NULL) {
-					new_fdt->fety = new_fety;
-					new_fdt->fd = new_fd + i + 1;	
-					params->fd = new_fd + i;
-					update_offset(fdt_table, i, OPEN);
-					return true;
-				}
+		// make fdt and connect to fety
+		for (int i = fdt_table->s_ety; i <= fdt_table->e_elem; i++) {
+			new_fdt = &fdt_table->d.fdt[i];
+			if (new_fdt->fety == NULL) {
+				new_fdt->fety = params->fety;
+				new_fdt->fd = (params->fd != 0) ? params->fd : new_fd + i + 1;
+				params->fd = new_fd + i;
+				update_offset(fdt_table, i, OPEN);
+				return true;
 			}
-			new_fd += MAX_FETY;
-			break;
-		case CLOSE:	// disable fdt and fety, only if ret == 0, delete fet
-			for (i = fdt_table->s_elem; i < fdt_table->e_elem; i++){
-				new_fdt = &fdt_table->d.fdt[i];
-				if (new_fdt->fd == params->fd) {
-					new_fety = new_fdt->fety;
-					if (--new_fety->refc == 0){
-						if (is_user_vaddr(new_fety->file)) continue;
-						file_close(new_fety->file);
-						new_fety->file = NULL;
-						fet_table = pg_round_down(new_fety);
-						update_offset(fet_table, i, CLOSE);
-					}
-					new_fdt->fety = NULL;
-					new_fdt->fd = 0;
+		}
+		new_fd += MAX_FETY;
+	}
+	NOT_REACHED();
+}
 
-					params->find_page = fdt_table;
-					params->offset = i;
-					update_offset(fdt_table, i, CLOSE);
-					return true;
+/* 
+ * fdt_list를 순회하면서 file과 file_entry, fdt 삭제 시도 후 성공여부 return 
+ * 입력시 params에 fd+1, 출력시 find_page, offset 저장
+ */
+bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t){
+	struct fpage *fdt_table, *fet_table;
+	struct fdt *new_fdt;
+	struct file_entry *new_fety;
+	struct list_elem *start_elem = list_head(&t->fdt_list);
+
+	while ((start_elem = list_next(start_elem)) != list_tail(&t->fdt_list)) {
+		fdt_table = list_entry(start_elem, struct fpage, elem);
+		for (int i = fdt_table->s_elem; i < fdt_table->e_elem; i++){
+			new_fdt = &fdt_table->d.fdt[i];
+			if (new_fdt->fd == params->fd) {
+				new_fety = new_fdt->fety;
+
+				// no reference to fety, then delete fety
+				if (--new_fety->refc == 0){	
+					if (is_user_vaddr(new_fety->file)) continue;
+					file_close(new_fety->file);
+					new_fety->file = NULL;
+					fet_table = pg_round_down(new_fety);
+					update_offset(fet_table, i, CLOSE);
 				}
+
+				// delete fdt
+				new_fdt->fety = NULL;
+				new_fdt->fd = 0;
+
+				params->find_page = fdt_table;
+				params->offset = i;
+				update_offset(fdt_table, i, CLOSE);
+				return true;
 			}
 		}
 	}
-	return false;
+	return false;	
 }
 
 /* power_off로 kenel process(qemu)종료 */
@@ -393,7 +424,7 @@ bool remove(const char *file)
 /*
  * 잘못된 파일 이름을 가지거나 disk에 파일이 없는 경우 -1 반환.
  * file_entry를 fet_list에서 없는 경우 (메모리 부족한 경우 page 추가 하여) fety 생성.
- * thread 내에 file_entry와 fdt를 만들어 (dup2를 안한다면 가장 낮은) fd 값을 저장한 뒤, fd 값을 반환.
+ * thread 내에 file_entry와 fdt를 만들어 fd 값을 저장한 뒤, fd 값을 반환.
  */
 int open(const char *file)
 {
@@ -405,7 +436,7 @@ int open(const char *file)
 	struct func_params params;
 	params.file = file_entity;
 	params.fd = 0;
-	if (!set_entity_in_page(&params, thread_current(), OPEN)) {
+	if (!open_fety_fdt_in_page(&params, thread_current())) {
 		free(file_entity);
 		return -1;
 	}
@@ -419,15 +450,14 @@ int filesize(int fd)
 	params.fd = fd + 1;
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
+
 	struct file *cur_file = params.file;
-	if (is_user_vaddr(cur_file)) return -1;
+	if (is_user_vaddr(cur_file)) 
+		return -1;
 	return file_length(cur_file);
 }
 
-/*
- * fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환
- * 참고 : disk read(file_read)와 intq_getc(input_getc)에 lock이 걸려있음
- */
+/* fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환 */
 int read(int fd, void *buffer, unsigned size)
 {
 	struct func_params params;
@@ -437,10 +467,9 @@ int read(int fd, void *buffer, unsigned size)
 	struct file *cur_file = params.file;
 	
 	if (cur_file != stdin_ptr && is_user_vaddr(cur_file))  // wrong fd
-		return -1;
-
+		return -1; 
 	if (size == 0) // not read
-		return 0;
+		return 0; 
 
 	check_address(buffer);
 	int bytes_read = size;
@@ -463,10 +492,7 @@ int read(int fd, void *buffer, unsigned size)
 	return bytes_read;
 }
 
-/*
- * fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환
- * 참고 : disk write에 lock이 걸려있음
- */
+/* fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환 */
 int write(int fd, const void *buffer, unsigned size)
 {
 	struct thread *cur = thread_current();	
@@ -533,7 +559,7 @@ void close(int fd)
 {
 	struct func_params params;
 	params.fd = fd + 1;
-	set_entity_in_page(&params, thread_current(), CLOSE);
+	delete_fety_fdt_in_page(&params, thread_current());
 }
 
 /* 
@@ -554,30 +580,15 @@ int dup2(int oldfd, int newfd)
 	new_fety->refc++;
 	params.fd = newfd + 1;
 	// newfd가 원래 존재하는 경우
-	if (set_entity_in_page(&params, t, CLOSE)){ 
+	if (delete_fety_fdt_in_page(&params, t)){ 
 		params.find_page->d.fdt[params.offset].fety = new_fety;
 		params.find_page->d.fdt[params.offset].fd = newfd + 1;
 	}
 	else // newfd에 해당하는 fdt를 새롭게 생성 
 	{	
-		struct fpage *fdt_table;
-		struct fdt *new_fdt = NULL;
-		struct list_elem *start_elem = list_head(&t->fdt_list);
-		while (1) {
-			if ((start_elem = list_next(start_elem)) == list_tail(&t->fdt_list))	 // add page
-				if ((fdt_table = add_page_to_list(&t->fdt_list)) == NULL)
-					return -1;
-			fdt_table = list_entry(start_elem, struct fpage, elem);
-			for (int i = fdt_table->s_ety; i <= fdt_table->e_elem; i++) {
-				new_fdt = &fdt_table->d.fdt[i];
-				if (new_fdt->fety == NULL) {
-					new_fdt->fety = new_fety;
-					new_fdt->fd = newfd + 1;
-					update_offset(fdt_table, i, OPEN);
-					return newfd;
-				}
-			}
-		}
-	}
+		params.fety = new_fety;
+		if (!open_fdt_in_page(&params, t))
+			return -1;
+	}		
 	return newfd;
 }

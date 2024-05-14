@@ -133,11 +133,12 @@ static void
 __do_fork(void *aux)
 {
 	struct intr_frame if_;
+	struct intr_frame *parent_if = (struct intr_frame *)(pg_round_up(aux + 1) - sizeof(struct intr_frame));
 	struct thread *parent = (struct thread *)aux;
 	struct thread *current = thread_current();
-
+	
 	/* 1. Read the cpu context to local stack. */
-	memcpy(&if_, &parent->temp_tf, sizeof(struct intr_frame));
+	memcpy(&if_, parent_if, sizeof(struct intr_frame));
 	if_.R.rax = 0;		// 자식의 fork return value는 0
 
 	/* 2. Duplicate PT */
