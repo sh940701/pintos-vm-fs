@@ -13,4 +13,10 @@ bool process_init_fdt(struct thread *t);
 bool process_duplicate_fdt(struct thread *parent, struct thread *child);
 bool process_delete_fdt(struct thread *t);
 
+struct lazy_load_segment_aux {
+	size_t page_read_bytes;
+	struct file *file;
+	off_t ofs;
+};
+
 #endif /* userprog/process.h */

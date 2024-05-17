@@ -16,6 +16,7 @@
 #include "userprog/syscall.h"
 #include "filesys/file.h"
 #endif
+#include "hash.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top

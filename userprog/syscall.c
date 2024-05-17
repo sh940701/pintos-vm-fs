@@ -163,14 +163,17 @@ void syscall_handler(struct intr_frame *f)
 
 /*
  * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
- * 3. 물리주소내에 mapping하는지 확인하여 위반하는경우 종료
+ * 3. 물리주소내에 mapping하는지 확인하여 위반하는경우, 4. lazy load인경우 제외하고 종료
  */
 void check_address(void *uaddr)
 {
-	struct thread *cur = thread_current();
-	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(cur->pml4, uaddr) == NULL)
-		exit(-1);
+    struct thread *cur = thread_current();
+    if (uaddr == NULL || is_kernel_vaddr(uaddr) || (pml4_get_page(cur->pml4, uaddr) == NULL)) {
+        if (!vm_claim_page(uaddr))
+            exit(-1);
+    }
 }
+
 
 /* list를 순회하며 pid를 가지는 thread return, 못찾으면 NULL return */
 struct thread *find_child(pid_t pid, struct list *fork_list)

@@ -2,6 +2,7 @@
 
 #include "vm/vm.h"
 #include "devices/disk.h"
+#include "include/threads/vaddr.h"
 
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
@@ -30,7 +31,11 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	/* Set up the handler */
 	page->operations = &anon_ops;
 
+	memset(kva, 0, PGSIZE);
+
 	struct anon_page *anon_page = &page->anon;
+
+	return true;
 }
 
 /* Swap in the page by read contents from the swap disk. */
