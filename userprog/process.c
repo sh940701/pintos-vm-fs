@@ -815,6 +815,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage, // upage 는 동적�
 	ASSERT(ofs % PGSIZE == 0);
 	size_t start_ofs = ofs;
 
+
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
 		/* Do calculate how to fill this page.
@@ -853,6 +854,7 @@ setup_stack(struct intr_frame *if_)
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
+
 
 	success = vm_alloc_page(VM_ANON, stack_bottom, 1);
 

@@ -5,6 +5,9 @@
 #include "vm/inspect.h"
 #include "include/threads/vaddr.h"
 #include "include/userprog/process.h"
+
+struct frame_table ft;
+
 // #include "mmu.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -17,6 +20,7 @@ void vm_init(void)
 	pagecache_init();
 #endif
 	register_inspect_intr();
+	frame_table_init();
 	/* DO NOT MODIFY UPPER LINES. */
 	/* TODO: Your code goes here. */
 }
@@ -104,6 +108,20 @@ bool spt_insert_page(struct supplemental_page_table *spt UNUSED,
 	return succ;
 }
 
+bool ft_insert_frame(struct frame *frame)
+{
+	int succ = false;
+	lock_acquire(&ft.ft_lock);
+
+	if (hash_insert(&ft.hash, &frame->hash_elem) == NULL)
+	{
+		succ = true;
+	};
+	lock_release(&ft.ft_lock);
+
+	return succ;
+}
+
 void spt_remove_page(struct supplemental_page_table *spt, struct page *page)
 {
 	vm_dealloc_page(page);
@@ -143,15 +161,26 @@ vm_get_frame(void)
 	frame = calloc(1, sizeof(struct frame));
 	frame->kva = palloc_get_page(PAL_USER);
 
+	ft_insert_frame(frame);
+
 	ASSERT(frame != NULL);
 	ASSERT(frame->page == NULL);
 	return frame;
 }
 
 /* Growing the stack. */
-static void
+static bool
 vm_stack_growth(void *addr UNUSED)
 {
+	bool success;
+	success = vm_alloc_page(VM_ANON, addr, 1);
+
+	if (!success)
+		return success;
+
+	success = vm_claim_page(addr);
+
+	return success;
 }
 
 /* Handle the fault on write_protected page */
@@ -172,13 +201,31 @@ bool vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
 	// if (!user || !not_present)
 	// 	return false;
 
+	if (!not_present)
+		return false;
+
 	addr = pg_round_down(addr);
 
 	page = spt_find_page(spt, addr);
 
-	if (page == NULL || (write && !page->writable))
+	if ((write && !page->writable))
+	{
 		return false;
+	}
 
+	if (page == NULL)
+	{
+		if ((uint64_t)f->rsp > (uint64_t)addr &&
+			((uint64_t)USER_STACK - (1 << 20)) <= (uint64_t)addr &&
+			(uint64_t)f->rsp - PGSIZE <= (uint64_t)addr)
+		{
+			return vm_stack_growth(addr);
+		}
+		else
+		{
+			return false;
+		}
+	}
 	return vm_do_claim_page(page);
 }
 
@@ -235,6 +282,14 @@ void supplemental_page_table_init(struct supplemental_page_table *spt UNUSED)
 	spt->hash = pages;
 }
 
+/* Initialize new supplemental page table */
+void frame_table_init()
+{
+	/* vm */
+	hash_init(&ft.hash, page_hash, page_less, NULL);
+	lock_init(&ft.ft_lock);
+}
+
 /* Copy supplemental page table from src to dst */
 bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
 								  struct supplemental_page_table *src UNUSED)
@@ -249,24 +304,21 @@ bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
 		// 할당 되기 전
 		if (old_p->operations->type == VM_UNINIT)
 		{
-			struct lazy_load_segment_aux *aux_p = calloc(1, sizeof (struct lazy_load_segment_aux));
-			memcpy(aux_p, old_p->uninit.aux, sizeof (struct lazy_load_segment_aux));
+			struct lazy_load_segment_aux *aux_p = calloc(1, sizeof(struct lazy_load_segment_aux));
+			memcpy(aux_p, old_p->uninit.aux, sizeof(struct lazy_load_segment_aux));
 
 			vm_alloc_page_with_initializer(
 				old_p->uninit.type,
 				old_p->va,
 				old_p->writable,
 				old_p->uninit.init,
-				aux_p
-			);
+				aux_p);
 		}
-		else
+		else if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
 		{
-			if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va)) {
-				struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+			struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
 
-				memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
-			}
+			memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
 		}
 	};
 

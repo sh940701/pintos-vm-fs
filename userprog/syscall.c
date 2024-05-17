@@ -168,6 +168,7 @@ void syscall_handler(struct intr_frame *f)
 void check_address(void *uaddr)
 {
     struct thread *cur = thread_current();
+	
     if (uaddr == NULL || is_kernel_vaddr(uaddr) || (pml4_get_page(cur->pml4, uaddr) == NULL)) {
         if (!vm_claim_page(uaddr))
             exit(-1);
@@ -475,6 +476,13 @@ int read(int fd, void *buffer, unsigned size)
 		return 0; 
 
 	check_address(buffer);
+
+	struct page *p = spt_find_page(&thread_current()->spt, pg_round_down(buffer));
+
+	if (!p->writable) {
+		exit(-1);
+	}
+
 	int bytes_read = size;
 	if (cur_file == stdin_ptr)
 	{
