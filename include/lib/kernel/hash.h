@@ -106,3 +106,9 @@ uint64_t page_hash (const struct hash_elem *e, void *aux);
 bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
 
 void destructor(struct hash_elem *h, void *aux);
+
+uint64_t frame_hash (const struct hash_elem *e, void *aux);
+bool frame_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
+
+// uint64_t mmap_hash (const struct hash_elem *e, void *aux);
+// bool mmap_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);

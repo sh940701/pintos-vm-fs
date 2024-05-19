@@ -19,12 +19,25 @@ enum vm_type
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_MARKER_0 = (1 << 3),
-	VM_MARKER_1 = (1 << 4),
+	VM_LOADED = (1 << 2),
+	// VM_LOADED = (1 << 4),
 
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
 };
+
+// 101
+
+// 100
+// 001
+
+// 101
+
+// 1. uninit
+// 2. anon - unloaded (swap device)
+// 3. anon - loaded (frame)
+// 4. file-backed - unloaded (disk)
+// 5. file-backed - loaded (frame)
 
 #include "vm/uninit.h"
 #include "vm/anon.h"
@@ -37,6 +50,13 @@ struct page_operations;
 struct thread;
 
 #define VM_TYPE(type) ((type) & 7)
+
+// struct mmap_file {
+// 	int mapid;
+// 	struct file *file;
+// 	struct list_elem elem; // 각 file 은 thread 의 list 에서 관리된다.
+// 	struct list page_list;
+// };
 
 /* The representation of "page".
  * This is kind of "parent class", which has four "child class"es, which are
@@ -51,6 +71,7 @@ struct page
 	/* Your implementation */
 	struct hash_elem hash_elem;
 	bool writable;
+	// struct list_elem mmap_elem; // 각 page 는 mmap_file 의 list 에서 관리된다.
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -97,6 +118,7 @@ struct page_operations
 struct supplemental_page_table
 {
 	struct hash hash;
+	// struct lock spt_lock;
 };
 
 #include "threads/thread.h"
@@ -128,5 +150,8 @@ struct frame_table
 };
 
 bool ft_insert_frame(struct frame *frame);
+void ft_remove_frame(struct frame *frame);
 void frame_table_init();
+
+extern struct frame_table ft;
 #endif /* VM_VM_H */

@@ -9,6 +9,7 @@
 #include "../debug.h"
 #include "threads/malloc.h"
 #include "include/vm/vm.h"
+#include "threads/thread.h"
 
 #define list_elem_to_hash_elem(LIST_ELEM)                       \
 	list_entry(LIST_ELEM, struct hash_elem, list_elem)
@@ -409,3 +410,27 @@ bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux)
 
 	return _a->va < _b->va;
 }
+
+uint64_t frame_hash (const struct hash_elem *e, void *aux) {
+	const struct frame *f = hash_entry(e, struct frame, hash_elem);
+	return hash_bytes(&f->kva, sizeof f->kva);
+}
+
+bool frame_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+	const struct frame *_a = hash_entry(a, struct frame, hash_elem);
+	const struct frame *_b = hash_entry(b, struct frame, hash_elem);
+
+	return _a->kva < _b->kva;
+}
+
+// uint64_t mmap_hash (const struct hash_elem *e, void *aux) {
+// 	const struct mmap_entry *me = hash_entry(e, struct mmap_entry, hash_elem);
+// 	return hash_bytes(&me->vaddr, sizeof me->vaddr);
+// }
+
+// bool mmap_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+// 	const struct mmap_entry *_a = hash_entry(a, struct mmap_entry, hash_elem);
+// 	const struct mmap_entry *_b = hash_entry(b, struct mmap_entry, hash_elem);
+
+// 	return _a->vaddr < _b->vaddr;
+// }

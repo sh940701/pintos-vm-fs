@@ -122,6 +122,15 @@ bool ft_insert_frame(struct frame *frame)
 	return succ;
 }
 
+void ft_remove_frame(struct frame *frame)
+{
+	lock_acquire(&ft.ft_lock);
+
+	hash_delete(&ft.hash, &frame->hash_elem);
+
+	lock_release(&ft.ft_lock);
+}
+
 void spt_remove_page(struct supplemental_page_table *spt, struct page *page)
 {
 	vm_dealloc_page(page);
@@ -226,6 +235,32 @@ bool vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
 			return false;
 		}
 	}
+	
+
+	switch (page->operations->type)
+	{
+	case VM_UNINIT:
+		break;
+	case VM_ANON:
+		if (VM_TYPE(page->anon.type) & VM_LOADED) // anon -> frame
+		{
+		}
+		else // anon -> swap device
+		{
+		}
+		break;
+	case VM_FILE:
+		if (VM_TYPE(page->file.type) & VM_LOADED) // file-backed -> frame
+		{
+		}
+		else // file-backed -> disk
+		{
+		}
+		break;
+	default:
+		break;
+	}
+
 	return vm_do_claim_page(page);
 }
 
@@ -286,7 +321,7 @@ void supplemental_page_table_init(struct supplemental_page_table *spt UNUSED)
 void frame_table_init()
 {
 	/* vm */
-	hash_init(&ft.hash, page_hash, page_less, NULL);
+	hash_init(&ft.hash, frame_hash, frame_less, NULL);
 	lock_init(&ft.ft_lock);
 }
 
@@ -314,11 +349,37 @@ bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
 				old_p->uninit.init,
 				aux_p);
 		}
-		else if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+		else if (old_p->operations->type == VM_ANON)
 		{
-			struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+			if (VM_TYPE(old_p->anon.type) & VM_LOADED) // anon -> frame
+			{
+				if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+				{
+					struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
 
-			memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
+					memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
+				}
+			}
+			else // anon -> swap device
+			{
+			}
+		}
+		else if (old_p->operations->type == VM_FILE)
+		{
+			if (VM_TYPE(old_p->file.type) & VM_LOADED) // file-backed -> frame
+			{
+				if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+				{
+					struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+
+					dst_page->file.file_data = old_p->file.file_data;
+
+					memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
+				}
+			}
+			else // file-backed -> disk
+			{
+			}
 		}
 	};
 

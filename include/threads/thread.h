@@ -22,7 +22,7 @@ enum thread_status
 
 #define MAX_FETY 126
 
-struct fdt 
+struct fdt
 {
 	struct file_entry *fety;
 	uint64_t fd;
@@ -34,22 +34,33 @@ struct file_entry
 	uint64_t refc;
 };
 
-struct fpage {
-    struct list_elem elem;
-    int s_ety;          // first empty offset
-    int s_elem;         // first elem offset
-    int e_elem;         // last elem offset + 1
-    uint64_t page_diff;       // ptr diff new fetpage which has been duped
-    union data {
-        struct fdt fdt[MAX_FETY];
-        struct file_entry fet[MAX_FETY];
-    } d;
+struct mmap_entry
+{
+	struct file *file;
+	uint32_t size;
+	struct list_elem list_elem;
+	void *vaddr;
+	size_t offset;
+};
+
+struct fpage
+{
+	struct list_elem elem;
+	int s_ety;			// first empty offset
+	int s_elem;			// first elem offset
+	int e_elem;			// last elem offset + 1
+	uint64_t page_diff; // ptr diff new fetpage which has been duped
+	union data
+	{
+		struct fdt fdt[MAX_FETY];
+		struct file_entry fet[MAX_FETY];
+	} d;
 };
 
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
-#define TID_ERROR ((tid_t)-1) /* Error value for tid_t. */
+#define TID_ERROR ((tid_t) - 1) /* Error value for tid_t. */
 
 /* Thread priorities. */
 #define PRI_MIN 0			 /* Lowest priority. */
@@ -130,18 +141,19 @@ struct thread
 	uint64_t *pml4; /* Page map level 4 */
 
 	/* System Call */
-	struct list fdt_list;					// open
-	struct list fet_list;					// dup
-	struct semaphore fork_sema;				// fork
-	struct semaphore wait_sema;				// wait
-	struct list fork_list;					// wait
-	struct list_elem fork_elem;				// wait
-	int exit_status;						// exit
-	struct file *opend_file; 				// load
+	struct list fdt_list;		// open
+	struct list fet_list;		// dup
+	struct semaphore fork_sema; // fork
+	struct semaphore wait_sema; // wait
+	struct list fork_list;		// wait
+	struct list_elem fork_elem; // wait
+	int exit_status;			// exit
+	struct file *opend_file;	// load
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	struct list mmap_list;
 #endif
 
 	/* Owned by thread.c. */
@@ -165,7 +177,8 @@ void thread_sleep(int64_t ticks);
 void thread_wakeup(int64_t current_ticks);
 
 /* for priority scheduling */
-typedef enum {
+typedef enum
+{
 	READY_LIST,
 	WAIT_LIST,
 	DONATION_LIST,

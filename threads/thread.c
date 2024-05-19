@@ -401,7 +401,7 @@ void thread_exit(void)
 	ASSERT(!intr_context());
 
 #ifdef USERPROG
-	process_exit();	
+	process_exit();
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -616,7 +616,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	/* advanced scheduler */ 
 	t->nice = 0;					
 	t->recent_cpu = 0;
-	
+	list_init(&t->mmap_list);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

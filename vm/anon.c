@@ -35,6 +35,8 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 
 	struct anon_page *anon_page = &page->anon;
 
+	anon_page->type = VM_ANON | VM_LOADED;
+
 	return true;
 }
 

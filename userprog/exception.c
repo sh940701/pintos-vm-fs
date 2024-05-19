@@ -155,11 +155,11 @@ page_fault (struct intr_frame *f) {
 	check_address(f->R.rax);
 	thread_current()->exit_status = -1;		// 비정상 종료
 #endif
+	exit(-1);
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
 			fault_addr,
 			not_present ? "not present" : "rights violation",
 			write ? "writing" : "reading",
 			user ? "user" : "kernel");
-	exit(-1);
 }
 

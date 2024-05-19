@@ -89,7 +89,7 @@ bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t);
 struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls);
 bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
-void mmap(void *addr, size_t length, int writable, int fd, off_t offset);
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
 void munmap(void *addr);
 
 void syscall_init(void)
@@ -167,8 +167,11 @@ void syscall_handler(struct intr_frame *f)
 
 	/* VM */
 	case SYS_MMAP:
-
+		f->R.rax = mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+		break;
 	case SYS_MUNMAP:
+		munmap(f->R.rdi);
+		break;
 	default:
 		printf("We don't implemented yet.");
 		break;
@@ -185,11 +188,14 @@ void check_address(void *uaddr)
 {
 	struct thread *cur = thread_current();
 
-	if (uaddr == NULL || is_kernel_vaddr(uaddr) || (pml4_get_page(cur->pml4, uaddr) == NULL))
+	if (uaddr == NULL || is_kernel_vaddr(uaddr))
 	{
+		exit(-1);
+	}
+
+	if (pml4_get_page(cur->pml4, uaddr) == NULL)
 		if (!vm_claim_page(uaddr))
 			exit(-1);
-	}
 }
 
 /* list를 순회하며 pid를 가지는 thread return, 못찾으면 NULL return */
@@ -647,5 +653,86 @@ int dup2(int oldfd, int newfd)
 	return newfd;
 }
 
-void mmap(void *addr, size_t length, int writable, int fd, off_t offset) {};
-void munmap(void *addr) {};
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
+{
+	struct thread *cur = thread_current();
+
+	// addr이 NULL이거나 커널 주소 공간에 속하는지 확인합니다.
+	if (addr == NULL || is_kernel_vaddr(addr))
+	{
+		// 시작 주소가 유효하지 않거나 커널 주소 공간에 속하면, 매핑을 허용하지 않습니다.
+		return MAP_FAILED;
+	}
+
+	// addr + length - 1을 통해 매핑의 마지막 주소가 커널 주소 공간에 속하는지 확인합니다.
+	if (is_kernel_vaddr(addr + length - 1))
+	{
+		// 매핑 범위의 끝이 커널 주소 공간에 속하면, 유효하지 않은 매핑으로 간주합니다.
+		return MAP_FAILED;
+	}
+
+	// length가 0 이하인지 확인합니다.
+	if (length <= 0)
+	{
+		// 매핑 길이가 0 이하이면, 유효하지 않은 요청으로 간주합니다.
+		return MAP_FAILED;
+	}
+
+	// offset이 음수인지 확인합니다.
+	if (offset < 0)
+	{
+		// 파일 내에서 매핑을 시작할 위치가 음수이면, 유효하지 않은 요청으로 간주합니다.
+		return MAP_FAILED;
+	}
+
+	// addr이 페이지에 정확하게 정렬되어 있는지 확인합니다.
+	if (addr != pg_round_down(addr))
+	{
+		// 시작 주소가 페이지 경계에 정확하게 정렬되지 않았다면, 유효하지 않은 요청으로 간주합니다.
+		return MAP_FAILED;
+	}
+
+	// offset이 페이지 크기의 배수인지 확인합니다.
+	if (offset % PGSIZE != 0)
+	{
+		// 파일 내에서 매핑을 시작하는 offset이 페이지 크기의 배수가 아니면, 유효하지 않은 요청으로 간주합니다.
+		return MAP_FAILED;
+	}
+
+	// 파일 존재 여부 확인
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &cur->fdt_list))
+	{
+		// 지정된 fd에 해당하는 파일이 존재하지 않으면, 오류를 반환합니다.
+		exit(-1);
+	}
+	struct file *cur_file = params.file;
+
+	// 주소가 이미 매핑되어 있는지 확인합니다.
+	struct page *p = spt_find_page(&cur->spt, pg_round_down(addr));
+	if (p)
+	{
+		// 주소가 이미 매핑되어 있다면, 다시 매핑할 수 없으므로 MAP_FAILED를 반환합니다.
+		return MAP_FAILED;
+	}
+
+	// 위의 모든 검사를 통과하면, 실제 매핑 작업을 수행합니다.
+	return do_mmap(addr, length, writable, cur_file, offset);
+};
+
+void munmap(void *addr)
+{
+	struct thread *cur = thread_current();
+
+	// address 확인
+	check_address(addr);
+
+	// mapping 되어있는지 확인
+	if (!pml4_get_page(cur->pml4, addr))
+	{
+		exit(-1);
+	}
+
+	do_munmap(addr);
+};
