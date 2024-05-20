@@ -60,7 +60,6 @@ anon_swap_in(struct page *page, void *kva)
 	if (!(VM_TYPE(page->anon.type) & VM_LOADED))
 	{
 		struct frame *frame = page->frame;
-		// bool result = pml4_set_page(curr->pml4, page->va, frame->kva, page->writable);
 
 		// 해당 disk 위치에 데이터가 있는지 확인
 		if (!bitmap_test(swap_map, anon_page->swap_offset))
@@ -80,8 +79,6 @@ anon_swap_in(struct page *page, void *kva)
 			disk_write(swap_disk, sec_no, clear); // 사용하고 지워줌
 			kva_for_write += DISK_SECTOR_SIZE;
 		}
-
-		printf("%s", frame->kva);
 
 		// 데이터를 사용했으니 bitmap 에서 해당 idx 값을 false 로 변경
 		bitmap_set(swap_map, anon_page->swap_offset, false);

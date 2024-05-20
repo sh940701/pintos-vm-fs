@@ -39,6 +39,23 @@ static bool
 file_backed_swap_in(struct page *page, void *kva)
 {
 	struct file_page *file_page UNUSED = &page->file;
+
+	if (!(VM_TYPE(page->file.type) & VM_LOADED))
+	{
+		struct lazy_load_segment_aux *param = (struct lazy_load_segment_aux *)page->file.file_data;
+
+		file_seek(param->file, param->ofs);
+		off_t read = file_read(param->file, page->frame->kva, param->page_read_bytes);
+
+		uint32_t page_zero_bytes = PGSIZE - read;
+
+		if (page_zero_bytes)
+		{
+			memset(page->frame->kva + param->page_read_bytes, 0, page_zero_bytes);
+		}
+	}
+
+	file_page->type = VM_ANON | VM_LOADED;
 }
 
 /* Swap out the page by writeback contents to the file. */
@@ -46,6 +63,25 @@ static bool
 file_backed_swap_out(struct page *page)
 {
 	struct file_page *file_page UNUSED = &page->file;
+	struct lazy_load_segment_aux *param = (struct lazy_load_segment_aux *)file_page->file_data;
+
+	if (pml4_is_dirty(thread_current()->pml4, page->va))
+		file_write_at(param->file, page->frame->kva, param->page_read_bytes, param->ofs);
+
+	// 1. 해당 page 의 pml4 connection 삭제
+	pml4_clear_page(page->frame->owner->pml4, page->va);
+
+	// 2. 프레임 비워줌
+	ft_remove_frame(page->frame);
+	palloc_free_page(page->frame->kva);
+	page->frame->page = NULL;
+	free(page->frame);
+
+	// 3. page->frame connection 해제
+	page->frame = NULL;
+
+	// page 의 type 을 unloaded 로 변경
+	file_page->type = VM_FILE;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
