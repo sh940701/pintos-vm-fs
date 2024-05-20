@@ -4,6 +4,7 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "include/threads/vaddr.h"
+#include "include/threads/mmu.h"
 #include "include/userprog/process.h"
 
 struct frame_table ft;
@@ -162,14 +163,23 @@ vm_evict_frame(void)
  * and return it. This always return valid address. That is, if the user pool
  * memory is full, this function evicts the frame to get the available memory
  * space.*/
-static struct frame *
+struct frame *
 vm_get_frame(void)
 {
 	struct frame *frame = NULL;
 
 	frame = calloc(1, sizeof(struct frame));
+	if (!frame)
+	{
+		return NULL;
+	}
 	frame->kva = palloc_get_page(PAL_USER);
-
+	if (!frame->kva)
+	{
+		free(frame);
+		return NULL;
+	}
+	frame->owner = thread_current();
 	ft_insert_frame(frame);
 
 	ASSERT(frame != NULL);
@@ -235,31 +245,6 @@ bool vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
 			return false;
 		}
 	}
-	
-
-	switch (page->operations->type)
-	{
-	case VM_UNINIT:
-		break;
-	case VM_ANON:
-		if (VM_TYPE(page->anon.type) & VM_LOADED) // anon -> frame
-		{
-		}
-		else // anon -> swap device
-		{
-		}
-		break;
-	case VM_FILE:
-		if (VM_TYPE(page->file.type) & VM_LOADED) // file-backed -> frame
-		{
-		}
-		else // file-backed -> disk
-		{
-		}
-		break;
-	default:
-		break;
-	}
 
 	return vm_do_claim_page(page);
 }
@@ -293,6 +278,26 @@ vm_do_claim_page(struct page *page)
 	struct thread *curr = thread_current();
 
 	struct frame *frame = vm_get_frame();
+
+	// frame 할당을 못받았다면 victim page 찾기
+	if (!frame)
+	{
+		// victim page 도 없다면 프로그램 종료
+		if (!(frame = find_victim_frame()))
+		{
+			printf("\n\nvm.c: 315\n\n");
+			exit(50);
+		}
+
+		swap_out(frame->page);
+
+		frame = vm_get_frame();
+		if (!frame)
+		{
+			printf("\n\nvm.c: 324\n\n");
+			exit(60);
+		}
+	}
 
 	/* Set links */
 	frame->page = page;
@@ -392,4 +397,34 @@ void supplemental_page_table_kill(struct supplemental_page_table *spt UNUSED)
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
 	hash_destroy(&spt->hash, destructor);
+}
+
+struct frame *find_victim_frame()
+{
+	lock_acquire(&ft.ft_lock);
+
+	struct hash_iterator i;
+
+	hash_first(&i, &ft.hash);
+	while (hash_next(&i))
+	{
+		struct frame *frame_entry = hash_entry(hash_cur(&i), struct frame, hash_elem);
+		if (pml4_is_accessed(frame_entry->owner->pml4, frame_entry->page->va))
+		{
+			pml4_set_accessed(frame_entry->owner->pml4, frame_entry->page->va, false);
+		}
+		else
+		{
+			lock_release(&ft.ft_lock);
+			return frame_entry;
+		}
+	}
+
+	lock_release(&ft.ft_lock);
+
+	struct hash_iterator j;
+	hash_first(&j, &ft.hash);
+	hash_next(&j);
+
+	return hash_entry(hash_cur(&j), struct frame, hash_elem);
 }

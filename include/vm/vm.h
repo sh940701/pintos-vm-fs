@@ -90,6 +90,7 @@ struct page
 struct frame
 {
 	void *kva;
+	struct thread *owner;
 	struct page *page;
 	struct hash_elem hash_elem;
 };
@@ -152,6 +153,8 @@ struct frame_table
 bool ft_insert_frame(struct frame *frame);
 void ft_remove_frame(struct frame *frame);
 void frame_table_init();
+struct frame *vm_get_frame(void);
+struct frame *find_victim_frame();
 
 extern struct frame_table ft;
 #endif /* VM_VM_H */
