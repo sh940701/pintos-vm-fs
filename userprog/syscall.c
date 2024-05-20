@@ -194,7 +194,7 @@ void check_address(void *uaddr)
 	}
 
 	if (pml4_get_page(cur->pml4, uaddr) == NULL)
-		if (!vm_claim_page(uaddr))
+		if (!vm_claim_page(uaddr) && !spt_find_page(&cur->spt, uaddr))
 			exit(-1);
 }
 
@@ -727,12 +727,6 @@ void munmap(void *addr)
 
 	// address 확인
 	check_address(addr);
-
-	// mapping 되어있는지 확인
-	if (!pml4_get_page(cur->pml4, addr))
-	{
-		exit(-1);
-	}
 
 	do_munmap(addr);
 };
