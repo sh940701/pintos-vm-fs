@@ -93,6 +93,7 @@ struct frame
 	struct thread *owner;
 	struct page *page;
 	struct hash_elem hash_elem;
+	uint32_t ref_count;
 };
 
 /* The function table for page operations.

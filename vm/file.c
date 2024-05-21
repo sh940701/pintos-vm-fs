@@ -91,10 +91,23 @@ file_backed_destroy(struct page *page)
 	struct thread *curr = thread_current();
 
 	// frame 이 존재한다면 관련 데이터제거해주고
+	// if (page->frame)
+	// {
+	// 	ft_remove_frame(page->frame);
+	// 	palloc_free_page(page->frame->kva);
+	// 	free(page->frame);
+	// }
 	if (page->frame)
 	{
-		ft_remove_frame(page->frame);
+		if (page->frame->ref_count)
+		{
+			page->frame->ref_count--;
+		}
+		else
+		{
 		palloc_free_page(page->frame->kva);
+		}
+		ft_remove_frame(page->frame);
 		free(page->frame);
 	}
 	// page hash 에서 제거해주고
@@ -196,7 +209,7 @@ void do_munmap(void *addr)
 
 	struct lazy_load_segment_aux *aux = p->uninit.aux;
 
-	size_t page_read_bytes = p->operations->type == VM_FILE ? p->file.file_data->page_read_bytes : aux->page_read_bytes;
+	size_t page_read_bytes;
 	struct file *file = me->file;
 	size_t length = me->size;
 	size_t disk_offset = me->offset;

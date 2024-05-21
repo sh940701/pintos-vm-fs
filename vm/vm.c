@@ -180,6 +180,7 @@ vm_get_frame(void)
 		return NULL;
 	}
 	frame->owner = thread_current();
+	frame->ref_count = 0;
 	ft_insert_frame(frame);
 
 	ASSERT(frame != NULL);
@@ -203,9 +204,37 @@ vm_stack_growth(void *addr UNUSED)
 }
 
 /* Handle the fault on write_protected page */
-static bool
-vm_handle_wp(struct page *page UNUSED)
+static bool vm_handle_wp(struct page *page UNUSED)
 {
+	struct frame *new_frame = vm_get_frame();
+
+	if (!new_frame)
+	{
+		new_frame = find_victim_frame();
+		if (!new_frame)
+		{
+			exit(-1); // 프레임 할당 실패 시 프로그램 종료
+		}
+		swap_out(new_frame->page);
+		new_frame = vm_get_frame();
+		if (!new_frame)
+		{
+			exit(-1);
+		}
+	}
+
+	memcpy(new_frame->kva, page->frame->kva, PGSIZE);
+
+	new_frame->page = page;
+	page->frame = new_frame;
+
+	bool result = pml4_set_page(thread_current()->pml4, page->va, new_frame->kva, page->writable);
+	if (!result)
+	{
+		return false;
+	}
+
+	return swap_in(page, new_frame->kva);
 }
 
 /* Return true on success */
@@ -220,16 +249,24 @@ bool vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
 	// if (!user || !not_present)
 	// 	return false;
 
-	if (!not_present)
-		return false;
-
 	addr = pg_round_down(addr);
 
 	page = spt_find_page(spt, addr);
 
-	if ((write && !page->writable))
+	if ((write && page && !page->writable))
 	{
 		return false;
+	}
+	if (!not_present)
+	{
+		if (write && page && page->writable)
+		{
+			return vm_handle_wp(page);
+		}
+		else
+		{
+			return false;
+		}
 	}
 
 	if (page == NULL)
@@ -344,46 +381,67 @@ bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
 		// 할당 되기 전
 		if (old_p->operations->type == VM_UNINIT)
 		{
-			struct lazy_load_segment_aux *aux_p = calloc(1, sizeof(struct lazy_load_segment_aux));
-			memcpy(aux_p, old_p->uninit.aux, sizeof(struct lazy_load_segment_aux));
-
+			struct lazy_load_segment_aux *aux_p = NULL;
+			if (old_p->uninit.aux)
+			{
+				aux_p = calloc(1, sizeof(struct lazy_load_segment_aux));
+				memcpy(aux_p, old_p->uninit.aux, sizeof(struct lazy_load_segment_aux));
+			}
 			vm_alloc_page_with_initializer(
 				old_p->uninit.type,
 				old_p->va,
 				old_p->writable,
 				old_p->uninit.init,
 				aux_p);
+
+			if (VM_TYPE(old_p->file.type) & VM_LOADED || old_p->file.type == VM_FILE)
+			{
+				struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+				dst_page->file.file_data = old_p->file.file_data;
+			}
 		}
 		else if (old_p->operations->type == VM_ANON)
 		{
 			if (VM_TYPE(old_p->anon.type) & VM_LOADED) // anon -> frame
 			{
-				if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
-				{
-					struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+				struct page *p = calloc(1, sizeof(struct page));
+				memcpy(p, old_p, sizeof(struct page));
 
-					memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
-				}
-			}
-			else // anon -> swap device
-			{
+				spt_insert_page(&thread_current()->spt, p);
+
+				old_p->frame->ref_count++;
+
+				p->frame = old_p->frame;
+
+				pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
+
+				// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
 			}
 		}
 		else if (old_p->operations->type == VM_FILE)
 		{
 			if (VM_TYPE(old_p->file.type) & VM_LOADED) // file-backed -> frame
 			{
-				if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
-				{
-					struct page *dst_page = spt_find_page(&thread_current()->spt, old_p->va);
+				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable))
+				// {
+				struct page *p = calloc(1, sizeof(struct page));
+				memcpy(p, old_p, sizeof(struct page));
 
-					dst_page->file.file_data = old_p->file.file_data;
+				struct lazy_load_segment_aux *aux = calloc(1, sizeof(struct lazy_load_segment_aux));
+				memcpy(aux, old_p->file.file_data, sizeof(struct lazy_load_segment_aux));
 
-					memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
-				}
-			}
-			else // file-backed -> disk
-			{
+				spt_insert_page(&thread_current()->spt, p);
+
+				p->frame = old_p->frame;
+
+				old_p->frame->ref_count++;
+
+				pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
+
+				// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
+				// }
 			}
 		}
 	};

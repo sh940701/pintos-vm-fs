@@ -222,7 +222,10 @@ int process_exec(void *f_name)
 	process_cleanup();
 
 	supplemental_page_table_init(&thread_current()->spt);
-	list_init(&thread_current()->mmap_list);
+	if (!list_size(&thread_current()->mmap_list))
+	{
+		list_init(&thread_current()->mmap_list);
+	}
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
 	int argc = 0;
@@ -427,6 +430,7 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
 	process_cleanup();
+	// mmap_list_kill(&thread_current()->mmap_list);
 	struct thread *cur = thread_current();
 	// close open file which is loaded from process.c (denying write on executables)
 	file_close(cur->opend_file);
@@ -471,7 +475,7 @@ process_cleanup(void)
 		 * that's been freed (and cleared). */
 		curr->pml4 = NULL;
 		pml4_activate(NULL);
-		pml4_destroy(pml4);
+		// pml4_destroy(pml4);
 	}
 }
 
