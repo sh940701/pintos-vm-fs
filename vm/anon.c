@@ -139,4 +139,39 @@ static void
 anon_destroy(struct page *page)
 {
 	struct anon_page *anon_page = &page->anon;
+
+	struct thread *curr = thread_current();
+
+	// frame 이 존재한다면 관련 데이터제거해주고
+	if (page->frame)
+	{
+		if (page->frame->ref_count)
+		{
+			page->frame->ref_count--;
+		}
+		else
+		{
+			palloc_free_page(page->frame->kva);
+			ft_remove_frame(page->frame);
+			free(page->frame);
+		}
+	}
+	/* todo swap device 영역도 해제해줘야 하는데, copy on write 의 경우 부모의 swap device 를 해제하게 되므로, 이에 대한 식별자가 필요함
+	따라서 현재 구조에서는 구현이 어렵고 시간 또한 춛분하지 않아 todo 로 남김*/
+	// // swap offset 이 존재한다면, swap 영역에 데이터가 보관되어있다는 의미이므로 swap 영역도 비워준다.
+	// else if (anon_page->swap_offset)
+	// {
+	// 	for (int sec_no = anon_page->swap_offset * SLOT_SIZE; sec_no < anon_page->swap_offset * SLOT_SIZE + SLOT_SIZE; sec_no++)
+	// 	{
+	// 		disk_write(swap_disk, sec_no, clear); // 비어있는 swap 영역을 지워줌
+	// 	}
+
+	// 	bitmap_set(swap_map, anon_page->swap_offset, false); // 해당 bitmap 영역 사용 가능으로 표시
+	// }
+
+	// page hash 에서 제거해주고
+	hash_delete(&curr->spt.hash, &page->hash_elem);
+
+	// pml4 에서 해당 주소 지우기
+	pml4_clear_page(curr->pml4, page->va);
 }
