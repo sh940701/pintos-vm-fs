@@ -269,6 +269,8 @@ int process_exec(void *f_name)
 		}
 	}
 
+	supplemental_page_table_kill(&tmp_spt);
+
 	// list_init(&thread_current()->mmap_list);
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
