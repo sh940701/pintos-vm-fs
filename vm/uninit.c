@@ -67,22 +67,6 @@ uninit_destroy(struct page *page)
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
 
-	switch (uninit->type)
-	{
-	case VM_ANON:
-		hash_delete(&thread_current()->spt.hash, &page->hash_elem);
-		break;
-	case VM_FILE:
-		// page hash 에서 제거해주고
-		// lock_acquire(&curr->spt.spt_lock);
-		hash_delete(&thread_current()->spt.hash, &page->hash_elem);
-		// lock_release(&curr->spt.spt_lock);
-
-		// pml4 에서 해당 주소 지우기
-		pml4_clear_page(thread_current()->pml4, page->va);
-		break;
-
-	default:
-		break;
-	}
+	hash_delete(&thread_current()->spt.hash, &page->hash_elem);
+	free(page->uninit.aux);
 }
