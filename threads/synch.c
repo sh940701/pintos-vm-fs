@@ -197,7 +197,8 @@ void lock_acquire(struct lock *lock)
 
    curr->wait_on_lock = lock;    // 현재 스레드의 wait_on_lock으로 지정
    // lock holder의 donors list에 현재 thread에만 삽입
-   list_insert_ordered(&lock->holder->donations, &curr->donation_elem, priority_larger, DONATION_LIST);
+   if (lock->holder)
+      list_insert_ordered(&lock->holder->donations, &curr->donation_elem, priority_larger, DONATION_LIST);
    donate_priority(); 
     
    sema_down(&lock->semaphore); 
