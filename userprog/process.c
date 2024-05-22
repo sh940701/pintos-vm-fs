@@ -218,14 +218,58 @@ int process_exec(void *f_name)
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
+	struct thread *curr = thread_current();
+
+	struct hash tmp_spt;
+	hash_init(&tmp_spt, page_hash, page_less, NULL);
+
+	struct hash_iterator i;
+	hash_first(&i, &curr->spt);
+	while (hash_next(&i))
+	{
+		struct page *page_entry = hash_entry(hash_cur(&i), struct page, hash_elem);
+		if (page_entry->operations->type == VM_FILE || page_entry->uninit.type == VM_FILE)
+		{
+			struct page *new_page = calloc(1, sizeof(struct page));
+			struct lazy_load_segment_aux *new_aux = calloc(1, sizeof(struct lazy_load_segment_aux));
+
+			memcpy(new_page, page_entry, sizeof(struct page));
+			memcpy(new_aux, page_entry->file.file_data, sizeof(struct lazy_load_segment_aux));
+
+			new_page->file.file_data = new_aux;
+
+			hash_insert(&tmp_spt, &new_page->hash_elem);
+
+			hash_delete(&curr->spt, &page_entry->hash_elem);
+		}
+	}
+
 	/* We first kill the current context */
 	process_cleanup();
 
 	supplemental_page_table_init(&thread_current()->spt);
-	if (!list_size(&thread_current()->mmap_list))
+
+	struct hash_iterator j;
+	hash_first(&j, &tmp_spt);
+	while (hash_next(&j))
 	{
-		list_init(&thread_current()->mmap_list);
+		struct page *page_entry = hash_entry(hash_cur(&j), struct page, hash_elem);
+		if (page_entry->operations->type == VM_FILE || page_entry->file.type == VM_FILE)
+		{
+			struct page *new_page = calloc(1, sizeof(struct page));
+			struct lazy_load_segment_aux *new_aux = calloc(1, sizeof(struct lazy_load_segment_aux));
+
+			memcpy(new_page, page_entry, sizeof(struct page));
+			memcpy(new_aux, page_entry->file.file_data, sizeof(struct lazy_load_segment_aux));
+
+			new_page->file.file_data = new_aux;
+
+			hash_insert(&curr->spt, &new_page->hash_elem);
+			hash_delete(&tmp_spt, &page_entry->hash_elem);
+		}
 	}
+
+	// list_init(&thread_current()->mmap_list);
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
 	int argc = 0;
@@ -429,8 +473,8 @@ int process_wait(tid_t child_tid UNUSED)
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void)
 {
+	mmap_list_kill(&thread_current()->mmap_list);
 	process_cleanup();
-	// mmap_list_kill(&thread_current()->mmap_list);
 	struct thread *cur = thread_current();
 	// close open file which is loaded from process.c (denying write on executables)
 	file_close(cur->opend_file);
@@ -456,7 +500,6 @@ process_cleanup(void)
 		lock_release(&filesys_lock);
 
 #ifdef VM
-	mmap_list_kill(&curr->mmap_list);
 	supplemental_page_table_kill(&curr->spt);
 #endif
 

@@ -246,14 +246,17 @@ bool vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
 
-	// if (!user || !not_present)
-	// 	return false;
-
 	addr = pg_round_down(addr);
 
 	page = spt_find_page(spt, addr);
 
-	if ((write && page && !page->writable))
+	struct list *mmap_list = &thread_current()->mmap_list;
+
+
+	if (!is_user_vaddr(addr)) {
+		return false;
+	}
+	if ((not_present && write && page && !page->writable))
 	{
 		return false;
 	}
@@ -402,47 +405,39 @@ bool supplemental_page_table_copy(struct supplemental_page_table *dst UNUSED,
 		}
 		else if (old_p->operations->type == VM_ANON)
 		{
-			if (VM_TYPE(old_p->anon.type) & VM_LOADED) // anon -> frame
-			{
-				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
-				struct page *p = calloc(1, sizeof(struct page));
-				memcpy(p, old_p, sizeof(struct page));
+			// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+			struct page *p = calloc(1, sizeof(struct page));
+			memcpy(p, old_p, sizeof(struct page));
 
-				spt_insert_page(&thread_current()->spt, p);
+			spt_insert_page(&thread_current()->spt, p);
 
-				old_p->frame->ref_count++;
+			old_p->frame->ref_count++;
 
-				p->frame = old_p->frame;
+			p->frame = old_p->frame;
 
-				pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
+			pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
 
-				// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
-			}
+			// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
 		}
 		else if (old_p->operations->type == VM_FILE)
 		{
-			if (VM_TYPE(old_p->file.type) & VM_LOADED) // file-backed -> frame
-			{
-				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
-				// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable))
-				// {
-				struct page *p = calloc(1, sizeof(struct page));
-				memcpy(p, old_p, sizeof(struct page));
+			// if (vm_alloc_page(old_p->operations->type, old_p->va, old_p->writable) && vm_claim_page(old_p->va))
+			struct page *p = calloc(1, sizeof(struct page));
+			memcpy(p, old_p, sizeof(struct page));
 
-				struct lazy_load_segment_aux *aux = calloc(1, sizeof(struct lazy_load_segment_aux));
-				memcpy(aux, old_p->file.file_data, sizeof(struct lazy_load_segment_aux));
+			struct lazy_load_segment_aux *aux = calloc(1, sizeof(struct lazy_load_segment_aux));
+			memcpy(aux, old_p->file.file_data, sizeof(struct lazy_load_segment_aux));
 
-				spt_insert_page(&thread_current()->spt, p);
+			spt_insert_page(&thread_current()->spt, p);
 
-				p->frame = old_p->frame;
+			p->frame = old_p->frame;
 
-				old_p->frame->ref_count++;
+			old_p->frame->ref_count++;
 
-				pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
+			pml4_set_page(thread_current()->pml4, p->va, old_p->frame->kva, false);
 
-				// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
-				// }
-			}
+			// memcpy(dst_page->frame->kva, old_p->frame->kva, PGSIZE);
+			// }
 		}
 	};
 
