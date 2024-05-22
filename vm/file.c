@@ -91,12 +91,6 @@ file_backed_destroy(struct page *page)
 	struct thread *curr = thread_current();
 
 	// frame 이 존재한다면 관련 데이터제거해주고
-	// if (page->frame)
-	// {
-	// 	ft_remove_frame(page->frame);
-	// 	palloc_free_page(page->frame->kva);
-	// 	free(page->frame);
-	// }
 	if (page->frame)
 	{
 		if (page->frame->ref_count)
@@ -105,15 +99,14 @@ file_backed_destroy(struct page *page)
 		}
 		else
 		{
-		palloc_free_page(page->frame->kva);
+			palloc_free_page(page->frame->kva);
+			ft_remove_frame(page->frame);
+			free(page->frame);
 		}
-		ft_remove_frame(page->frame);
-		free(page->frame);
 	}
+
 	// page hash 에서 제거해주고
-	// lock_acquire(&curr->spt.spt_lock);
 	hash_delete(&curr->spt.hash, &page->hash_elem);
-	// lock_release(&curr->spt.spt_lock);
 
 	// pml4 에서 해당 주소 지우기
 	pml4_clear_page(curr->pml4, page->va);
