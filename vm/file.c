@@ -138,7 +138,7 @@ do_mmap(void *addr, size_t length, int writable,
 	void *saved_addr = addr;
 	size_t start_ofs = offset;
 
-	struct file *reopened_file = file_reopen(file);
+	struct file *reopened_file = file_open(file);
 
 	struct mmap_entry *me = calloc(1, sizeof(struct mmap_entry));
 	me->file = reopened_file;
@@ -146,7 +146,6 @@ do_mmap(void *addr, size_t length, int writable,
 	me->vaddr = addr;
 	me->offset = offset;
 
-	list_push_back(&thread_current()->mmap_list, &me->list_elem);
 
 	uint32_t zero_bytes = (ROUND_UP(length, PGSIZE) - length);
 
@@ -169,6 +168,7 @@ do_mmap(void *addr, size_t length, int writable,
 		start_ofs += PGSIZE;
 	}
 
+	list_push_back(&thread_current()->mmap_list, &me->list_elem);
 	return saved_addr;
 }
 
