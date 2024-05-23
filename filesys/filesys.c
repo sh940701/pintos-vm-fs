@@ -27,8 +27,10 @@ filesys_init (bool format) {
 	fat_init ();
 
 	if (format)
+		// fat 를 새로 만들어서 disk 에 저장해줌
 		do_format ();
 
+	// disk 로부터 fat 를 읽어서 fat_fs 에 저장
 	fat_open ();
 #else
 	/* Original FS */
