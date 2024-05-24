@@ -169,7 +169,7 @@ void fat_fs_init(void)
 {
 	/* TODO: Your code goes here. */
 	fat_fs->fat_length = fat_fs->bs.fat_sectors;
-	fat_fs->data_start = fat_fs->bs.fat_sectors * DISK_SECTOR_SIZE;
+	fat_fs->data_start = fat_fs->bs.fat_start + fat_fs->bs.fat_sectors;
 }
 
 /*----------------------------------------------------------------------------*/
