@@ -91,6 +91,14 @@ bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
 void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
 void munmap(void *addr);
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir (int fd);
+int inumber (int fd);
+int symlink (const char* target, const char* linkpath);
+int mount (const char *path, int chan_no, int dev_no);
+int umount (const char *path);
 
 void syscall_init(void)
 {
@@ -730,3 +738,43 @@ void munmap(void *addr)
 
 	do_munmap(addr);
 };
+
+bool
+chdir (const char *dir) {
+	return syscall1 (SYS_CHDIR, dir);
+}
+
+bool
+mkdir (const char *dir) {
+	return syscall1 (SYS_MKDIR, dir);
+}
+
+bool
+readdir (int fd, char name[READDIR_MAX_LEN + 1]) {
+	return syscall2 (SYS_READDIR, fd, name);
+}
+
+bool
+isdir (int fd) {
+	return syscall1 (SYS_ISDIR, fd);
+}
+
+int
+inumber (int fd) {
+	return syscall1 (SYS_INUMBER, fd);
+}
+
+int
+symlink (const char* target, const char* linkpath) {
+	return syscall2 (SYS_SYMLINK, target, linkpath);
+}
+
+int
+mount (const char *path, int chan_no, int dev_no) {
+	return syscall3 (SYS_MOUNT, path, chan_no, dev_no);
+}
+
+int
+umount (const char *path) {
+	return syscall1 (SYS_UMOUNT, path);
+}
