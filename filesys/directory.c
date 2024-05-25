@@ -5,6 +5,7 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "include/filesys/fat.h"
 
 /* A directory. */
 struct dir
@@ -53,7 +54,7 @@ dir_open(struct inode *inode)
 struct dir *
 dir_open_root(void)
 {
-	return dir_open(inode_open(ROOT_DIR_SECTOR));
+	return dir_open(inode_open(cluster_to_sector(ROOT_DIR_CLUSTER)));
 }
 
 /* Opens and returns a new directory for the same inode as DIR.
@@ -96,6 +97,7 @@ lookup(const struct dir *dir, const char *name,
 	ASSERT(dir != NULL);
 	ASSERT(name != NULL);
 
+	// 주어진 dir 내에서 이름을 가지고, 이름이 같은 dir_entry 를 찾는다.
 	for (ofs = 0; inode_read_at(dir->inode, &e, sizeof e, ofs) == sizeof e;
 		 ofs += sizeof e)
 		if (e.in_use && !strcmp(name, e.name))
@@ -143,10 +145,6 @@ bool dir_add(struct dir *dir, const char *name, disk_sector_t inode_sector)
 
 	ASSERT(dir != NULL);
 	ASSERT(name != NULL);
-
-	/* Check NAME for validity. */
-	if (*name == '\0' || strlen(name) > NAME_MAX)
-		return false;
 
 	/* Check that NAME is not in use. */
 	if (lookup(dir, name, NULL, NULL))

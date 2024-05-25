@@ -61,15 +61,24 @@ filesys_done (void) {
  * Fails if a file named NAME already exists,
  * or if internal memory allocation fails. */
 bool
-filesys_create (const char *name, off_t initial_size) {
-	disk_sector_t inode_sector = find_empty_fat();
-	struct dir *dir = dir_open_root ();
+filesys_create (const char *name, off_t initial_size) { // 파일의 이름과 크기를 받아서 초기화
+	/* Check NAME for validity. */
+	if (*name == '\0' || strlen(name) > NAME_MAX)
+		return false;
+		
+	// struct disk_inode 를 저장할 새로운 cluster 할당
+	cluster_t disk_inode_cluster = fat_create_chain(0);
+	disk_sector_t disk_inode_sector = cluster_to_sector(disk_inode_cluster);
+
+	// root directory 를 연다.
+	// 여기서 연게 0번째 데이터에 있는 directory 데이터의 inode 였구나!
+	struct dir *dir = dir_open_root();
+
 	bool success = (dir != NULL
-			// && free_map_allocate (1, &inode_sector)
-			&& inode_create (inode_sector, initial_size)
-			&& dir_add (dir, name, inode_sector));
-	if (!success && inode_sector != 0)
-		free_map_release (inode_sector, 1);
+			&& inode_create (disk_inode_sector, initial_size)
+			&& dir_add (dir, name, disk_inode_sector));
+	if (!success && disk_inode_sector != 0)
+		fat_remove_chain(disk_inode_cluster, 1);
 	dir_close (dir);
 
 	return success;
@@ -113,6 +122,9 @@ do_format (void) {
 #ifdef EFILESYS
 	/* Create FAT and save it to the disk. */
 	fat_create ();
+
+	if (!dir_create (cluster_to_sector(ROOT_DIR_CLUSTER), 16))
+		PANIC ("root directory creation failed");
 	fat_close ();
 #else
 	free_map_create ();

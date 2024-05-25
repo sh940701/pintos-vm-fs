@@ -13,7 +13,7 @@ struct fat_boot
 	unsigned int sectors_per_cluster; /* Fixed to 1 */
 	unsigned int total_sectors;
 	unsigned int fat_start;
-	unsigned int fat_sectors; /* Size of FAT in sectors. */
+	unsigned int fat_sectors; /* Size of FAT in sectors. */ // -> fat 가 몇 개의 sector 를 차지하는가
 	unsigned int root_dir_cluster;
 };
 
@@ -154,6 +154,7 @@ void fat_create(void)
 void fat_boot_create(void)
 {
 	unsigned int fat_sectors =
+		// 디스크 전체 byte 수 / (sector 한 개 사이즈(512) / fat element size(4) * 1 + 1) + 1
 		(disk_size(filesys_disk) - 1) / (DISK_SECTOR_SIZE / sizeof(cluster_t) * SECTORS_PER_CLUSTER + 1) + 1;
 	fat_fs->bs = (struct fat_boot){
 		.magic = FAT_MAGIC,
@@ -167,8 +168,8 @@ void fat_boot_create(void)
 
 void fat_fs_init(void)
 {
-	/* TODO: Your code goes here. */
-	fat_fs->fat_length = fat_fs->bs.fat_sectors;
+	// 전체 디스크의 element 수 - fat 이 차지하는 
+	fat_fs->fat_length = disk_size(filesys_disk) - 1 - fat_fs->bs.fat_sectors;
 	fat_fs->data_start = fat_fs->bs.fat_start + fat_fs->bs.fat_sectors;
 }
 
@@ -182,7 +183,6 @@ void fat_fs_init(void)
 cluster_t
 fat_create_chain(cluster_t clst)
 {
-	/* TODO: Your code goes here. */
 	int available_idx = find_empty_fat();
 	cluster_t available_clst = available_idx;
 	if (available_idx == EOChain)
@@ -190,7 +190,7 @@ fat_create_chain(cluster_t clst)
 
 	if (clst == 0)
 	{
-		fat_fs->fat[clst] = EOChain;
+		fat_fs->fat[available_idx] = EOChain;
 	}
 	else
 	{
@@ -245,12 +245,12 @@ disk_sector_t
 cluster_to_sector(cluster_t clst)
 {
 	/* TODO: Your code goes here. */
-	return clst * DISK_SECTOR_SIZE;
+	return clst + fat_fs->data_start;
 }
 
 int find_empty_fat()
 {
-	for (int i = 2; i < fat_fs->fat_length; i++)
+	for (int i = fat_fs->bs.fat_start; i < fat_fs->fat_length; i++)
 	{
 		if (fat_fs->fat[i] == 0)
 		{
@@ -259,4 +259,13 @@ int find_empty_fat()
 	}
 
 	return EOChain;
+}
+
+cluster_t sector_to_cluster(disk_sector_t sector) {
+	cluster_t clst = sector - fat_fs->data_start;
+
+	if (clst < 2)
+		return 0;
+
+	return clst;
 }
