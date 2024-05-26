@@ -13,8 +13,10 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "filesys/inode.h"
+#include "filesys/directory.h"
 #include "devices/disk.h"
 #include "threads/palloc.h"
+
 
 /* System call.
  *
@@ -91,14 +93,14 @@ bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
 void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
 void munmap(void *addr);
-bool chdir (const char *dir);
-bool mkdir (const char *dir);
-bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
-bool isdir (int fd);
-int inumber (int fd);
-int symlink (const char* target, const char* linkpath);
-int mount (const char *path, int chan_no, int dev_no);
-int umount (const char *path);
+bool chdir(const char *dir);
+bool mkdir(const char *dir);
+bool readdir(int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir(int fd);
+int inumber(int fd);
+int symlink(const char *target, const char *linkpath);
+int mount(const char *path, int chan_no, int dev_no);
+int umount(const char *path);
 
 void syscall_init(void)
 {
@@ -121,8 +123,6 @@ void syscall_init(void)
 void syscall_handler(struct intr_frame *f)
 {
 	int syscall = f->R.rax;
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_acquire(&filesys_lock);
 	switch (syscall)
 	{
 	case SYS_HALT:
@@ -141,22 +141,32 @@ void syscall_handler(struct intr_frame *f)
 		f->R.rax = wait(f->R.rdi);
 		break;
 	case SYS_CREATE:
+		lock_acquire(&filesys_lock);
 		f->R.rax = create(f->R.rdi, f->R.rsi);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_REMOVE:
+		lock_acquire(&filesys_lock);
 		f->R.rax = remove(f->R.rdi);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_OPEN:
+		lock_acquire(&filesys_lock);
 		f->R.rax = open(f->R.rdi);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_FILESIZE:
 		f->R.rax = filesize(f->R.rdi);
 		break;
 	case SYS_READ:
+		lock_acquire(&filesys_lock);
 		f->R.rax = read(f->R.rdi, f->R.rsi, f->R.rdx);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_WRITE:
+		lock_acquire(&filesys_lock);
 		f->R.rax = write(f->R.rdi, f->R.rsi, f->R.rdx);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_SEEK:
 		seek(f->R.rdi, f->R.rsi);
@@ -172,20 +182,51 @@ void syscall_handler(struct intr_frame *f)
 		f->R.rax = dup2(f->R.rdi, f->R.rsi);
 		lock_release(&filesys_lock);
 		break;
-
 	/* VM */
 	case SYS_MMAP:
+		lock_acquire(&filesys_lock);
 		f->R.rax = mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+		lock_release(&filesys_lock);
 		break;
 	case SYS_MUNMAP:
+		lock_acquire(&filesys_lock);
 		munmap(f->R.rdi);
+		lock_release(&filesys_lock);
 		break;
+	case SYS_CHDIR:
+		lock_acquire(&filesys_lock);
+		f->R.rax = chdir(f->R.rdi);
+		lock_release(&filesys_lock);
+		break;                  /* Change the current directory. */
+	case SYS_MKDIR:
+		lock_acquire(&filesys_lock);
+		f->R.rax = mkdir(f->R.rdi);
+		lock_release(&filesys_lock);
+		break;                  /* Create a directory. */
+	case SYS_READDIR:
+		lock_acquire(&filesys_lock);
+		f->R.rax = readdir(f->R.rdi, f->R.rsi);
+		lock_release(&filesys_lock);
+		break;                /* Reads a directory entry. */
+	case SYS_ISDIR:
+		lock_acquire(&filesys_lock);
+		f->R.rax = isdir(f->R.rdi);
+		lock_release(&filesys_lock);
+		break;                  /* Tests if a fd represents a directory. */
+	case SYS_INUMBER:
+		lock_acquire(&filesys_lock);
+		f->R.rax = inumber(f->R.rdi);
+		lock_release(&filesys_lock);
+		break;                /* Returns the inode number for a fd. */
+	case SYS_SYMLINK:
+		lock_acquire(&filesys_lock);
+		f->R.rax = symlink(f->R.rdi, f->R.rsi);
+		lock_release(&filesys_lock);
+		break;                /* Returns the inode number for a fd. */
 	default:
 		printf("We don't implemented yet.");
 		break;
 	}
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_release(&filesys_lock);
 }
 
 /*
@@ -739,42 +780,85 @@ void munmap(void *addr)
 	do_munmap(addr);
 };
 
-bool
-chdir (const char *dir) {
-	return syscall1 (SYS_CHDIR, dir);
+bool chdir(const char *dir)
+{
+	return filesys_chdir(dir);
 }
 
-bool
-mkdir (const char *dir) {
-	return syscall1 (SYS_MKDIR, dir);
+bool mkdir(const char *dir)
+{
+	bool new_dir = filesys_create_dir(dir);
+	return new_dir;
 }
 
-bool
-readdir (int fd, char name[READDIR_MAX_LEN + 1]) {
-	return syscall2 (SYS_READDIR, fd, name);
+bool readdir(int fd, char name[READDIR_MAX_LEN + 1])
+{
+	if (name == NULL) {
+		return false;
+	}
+
+	struct thread *curr = thread_current();
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &curr->fdt_list))
+	{
+		return false;
+	}
+	struct file *cur_file = params.file;
+
+	if (!inode_is_dir(file_get_inode(cur_file))) {
+		return false;
+	}
+
+	struct dir *dir = cur_file;
+	if (dir->pos == 0) {
+		dir_seek(dir, 2 * sizeof(struct dir_entry));
+	}
+
+	bool result = dir_readdir(dir, name);
+
+	return result;
 }
 
-bool
-isdir (int fd) {
-	return syscall1 (SYS_ISDIR, fd);
+bool isdir(int fd)
+{
+	struct thread *curr = thread_current();
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &curr->fdt_list))
+	{
+		return false;
+	}
+	struct file *cur_file = params.file;
+
+	return inode_is_dir(cur_file->inode);
 }
 
-int
-inumber (int fd) {
-	return syscall1 (SYS_INUMBER, fd);
+int inumber(int fd)
+{
+	struct thread *curr = thread_current();
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &curr->fdt_list))
+	{
+		return false;
+	}
+	struct file *cur_file = params.file;
+
+	return inode_get_inumber(file_get_inode(cur_file));
 }
 
-int
-symlink (const char* target, const char* linkpath) {
-	return syscall2 (SYS_SYMLINK, target, linkpath);
+int symlink(const char *target, const char *linkpath)
+{
+	return 1;
 }
 
-int
-mount (const char *path, int chan_no, int dev_no) {
-	return syscall3 (SYS_MOUNT, path, chan_no, dev_no);
+int mount(const char *path, int chan_no, int dev_no)
+{
+	return 1;
 }
 
-int
-umount (const char *path) {
-	return syscall1 (SYS_UMOUNT, path);
+int umount(const char *path)
+{
+	return 1;
 }

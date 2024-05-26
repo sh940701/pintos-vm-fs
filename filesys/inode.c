@@ -17,7 +17,9 @@ struct inode_disk {
 	disk_sector_t start;                /* First data sector. */
 	off_t length;                       /* File size in bytes. */
 	unsigned magic;                     /* Magic number. */
-	uint32_t unused[125];               /* Not used. */
+	uint32_t is_dir;
+	unsigned is_link;
+	uint32_t unused[123];               /* Not used. */
 };
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -79,11 +81,11 @@ inode_init (void) {
  * Returns true if successful.
  * Returns false if memory or disk allocation fails. */
 bool
-inode_create (disk_sector_t sector, off_t length) {
+inode_create (disk_sector_t sector, off_t length, uint32_t is_dir) {
 	struct inode_disk *disk_inode = NULL;
 	bool success = false;
 
-	// ASSERT (length >= 0);
+	ASSERT (length >= 0);
 
 	/* If this assertion fails, the inode structure is not exactly
 	 * one sector in size, and you should fix that. */
@@ -91,14 +93,14 @@ inode_create (disk_sector_t sector, off_t length) {
 
 	// 아이노드를 먼저 만든다.
 	disk_inode = calloc (1, sizeof *disk_inode);
-	
 	if (disk_inode != NULL) {
-		cluster_t file_start_clst = fat_create_chain(0); // 파일의 "데이터" 가 담길 영역의 시작 지점
+		cluster_t cluster = fat_create_chain(0); // 파일의 "데이터" 가 담길 영역의 시작 지점
 
 		// disk inode 를 먼저 초기화해준다.
 		disk_inode->length = length;
 		disk_inode->magic = INODE_MAGIC;
-		disk_inode->start = cluster_to_sector(file_start_clst); // 이 disk inode 의 데이터 시작지점을 넣어준다.
+		disk_inode->is_dir = is_dir; // file 인지 directory 인지 여부
+		disk_inode->start = cluster; // 이 disk inode 의 데이터 시작지점을 넣어준다.
 
 		// disk inode 를 기록해준다.
 		// 이제 disk 에서는 sector 에 있는 disk_inode 의 start 를 기반으로, 해당 inode 의 데이터를 찾을 수 있다.
@@ -106,24 +108,20 @@ inode_create (disk_sector_t sector, off_t length) {
 		// 2. clst -> sector 로 변환하여 disk 에 저장되어있는 disk_inode 데이터 검색
 		// 3. 해당 데이터는 disk_inode 이기 때문에 start 가 있음
 		// 4. 해당 데이터의 start 지점으로부터 데이터를 read
-		disk_write (filesys_disk, sector, disk_inode);
+		disk_write (filesys_disk, cluster_to_sector(sector), disk_inode);
 
 		size_t sectors = bytes_to_sectors (length);
 		
 		// 위 과정에서 start 지점(file_start_clst) 에서부터 데이터를 찾을 수 있게, 데이터를 넣어줌
 		if (sectors > 0) {
-			static char zeros[DISK_SECTOR_SIZE] = {0,};
-			cluster_t target = file_start_clst;
-			disk_sector_t write_sector;
+			static char zeros[DISK_SECTOR_SIZE];
+			size_t i;
+			disk_write(filesys_disk, cluster_to_sector(disk_inode->start), zeros);
+			cluster_t tmp = cluster;
 
-			while (sectors > 0) {
-				// 처음으로 만들어준 disk inode 의 fat 에 이어서 data(sectors) 를 위한 fat element 를 연결해준다.
-				write_sector = cluster_to_sector(target);
-				// 일단은 데이터를 0으로 초기화
-				disk_write(filesys_disk, write_sector, zeros);
-
-				target = fat_create_chain(target);
-				sectors--;
+			for (i = 1; i < sectors; i++) {
+				tmp = fat_create_chain(tmp);
+				disk_write(filesys_disk, cluster_to_sector(tmp), zeros);
 			}
 		}
 
@@ -162,7 +160,7 @@ inode_open (disk_sector_t sector) {
 	inode->open_cnt = 1;
 	inode->deny_write_cnt = 0;
 	inode->removed = false;
-	disk_read (filesys_disk, inode->sector, &inode->data);
+	disk_read (filesys_disk, cluster_to_sector(inode->sector), &inode->data);
 	return inode;
 }
 
@@ -345,4 +343,27 @@ inode_allow_write (struct inode *inode) {
 off_t
 inode_length (const struct inode *inode) {
 	return inode->data.length;
+}
+
+bool
+inode_is_dir (const struct inode *inode) {
+	bool result;
+
+	struct inode_disk *disk_inode = calloc(1, sizeof *disk_inode);
+
+	disk_read(filesys_disk, cluster_to_sector(inode->sector), disk_inode);
+
+	result = disk_inode->is_dir;
+	free(disk_inode);
+
+	return result;
+}
+
+
+disk_sector_t inode_sector(struct inode *inode) {
+	return inode->sector;
+}
+
+bool inode_is_removed (const struct inode *inode) {
+	return inode->removed;
 }

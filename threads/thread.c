@@ -17,6 +17,7 @@
 #include "filesys/file.h"
 #endif
 #include "hash.h"
+#include "include/filesys/directory.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -273,6 +274,10 @@ tid_t thread_create(const char *name, int priority,
 	if (t != idle_thread)
 		thread_unblock(t);
 	preempt_priority();
+
+	if (thread_current()->cwd != NULL) {
+		t->cwd = dir_reopen(thread_current()->cwd);
+	}
 	return tid;
 }
 
@@ -603,6 +608,8 @@ init_thread(struct thread *t, const char *name, int priority)
 	sema_init(&t->wait_sema, 0);
 	list_init(&t->fdt_list);
 	list_init(&t->fet_list);
+
+	t->cwd = NULL;
 
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);

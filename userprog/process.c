@@ -484,6 +484,8 @@ void process_exit(void)
 	// delete fdt and file (it should be out of process_cleanup())
 	process_delete_fdt(cur);
 
+	dir_close(cur->cwd);
+
 	// give exit_status to parent thread
 	if (cur->fork_elem.prev != NULL)
 	{
