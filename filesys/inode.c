@@ -48,7 +48,7 @@ byte_to_sector(const struct inode *inode, off_t pos)
 {
 	ASSERT(inode != NULL);
 
-	cluster_t target = sector_to_cluster(inode->data.start);
+	cluster_t target = inode->data.start;
 
 	/* file length와 관계없이 pos에 크기에 따라 계속 진행
 	   file length보다 pos가 크면 새로운 cluster를 할당해가면서 진행 */
