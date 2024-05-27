@@ -190,7 +190,7 @@ fat_create_chain(cluster_t clst)
 
 	if (clst == 0)
 	{
-		fat_fs->fat[clst] = EOChain;
+		fat_fs->fat[available_clst] = EOChain;
 	}
 	else
 	{
@@ -248,16 +248,19 @@ cluster_to_sector(cluster_t clst)
 	return clst + fat_fs->data_start;
 }
 
-disk_sector_t
-sector_to_cluster(disk_sector_t sector)
+cluster_t sector_to_cluster(disk_sector_t sector)
 {
-	/* TODO: Your code goes here. */
-	return sector - fat_fs->data_start;
+	cluster_t clst = sector - fat_fs->data_start;
+
+	if (clst < 2)
+		return 0;
+
+	return clst;
 }
 
 int find_empty_fat()
 {
-	for (int i = 2; i < fat_fs->fat_length; i++)
+	for (int i = 1; i < fat_fs->fat_length; i++)
 	{
 		if (fat_fs->fat[i] == 0)
 		{
@@ -266,4 +269,14 @@ int find_empty_fat()
 	}
 
 	return EOChain;
+}
+
+cluster_t find_chain_end(cluster_t clst)
+{
+	while (fat_fs->fat[clst] != EOChain)
+	{
+		clst = fat_fs->fat[clst];
+	}
+
+	return clst;
 }

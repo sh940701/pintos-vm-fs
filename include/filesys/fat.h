@@ -35,5 +35,8 @@ cluster_t fat_get (cluster_t clst);
 void fat_put (cluster_t clst, cluster_t val);
 disk_sector_t cluster_to_sector (cluster_t clst);
 int find_empty_fat();
+disk_sector_t cluster_to_sector(cluster_t clst);
+disk_sector_t sector_to_cluster(disk_sector_t sector);
+cluster_t find_chain_end(cluster_t clst);
 
 #endif /* filesys/fat.h */

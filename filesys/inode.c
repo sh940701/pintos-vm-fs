@@ -6,6 +6,7 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
+#include "filesys/fat.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
@@ -41,13 +42,46 @@ struct inode {
  * Returns -1 if INODE does not contain data for a byte at offset
  * POS. */
 static disk_sector_t
-byte_to_sector (const struct inode *inode, off_t pos) {
-	ASSERT (inode != NULL);
-	if (pos < inode->data.length)
-		return inode->data.start + pos / DISK_SECTOR_SIZE;
-	else
-		return -1;
+byte_to_sector(const struct inode *inode, off_t pos)
+{
+	ASSERT(inode != NULL);
+
+	cluster_t target = sector_to_cluster(inode->data.start);
+
+	/* file length와 관계없이 pos에 크기에 따라 계속 진행
+	   file length보다 pos가 크면 새로운 cluster를 할당해가면서 진행 */
+	while (pos >= DISK_SECTOR_SIZE)
+	{
+		if (fat_get(target) == EOChain)
+			fat_create_chain(target);
+
+		target = fat_get(target);
+		pos -= DISK_SECTOR_SIZE;
+	}
+
+	disk_sector_t sector = cluster_to_sector(target);
+	return sector;
 }
+
+// 이게 맞는 것 같은데,, 일단 넘김
+// static disk_sector_t
+// byte_to_sector (const struct inode *inode, off_t pos) {
+// 	// 해당 inode 의 data 시작 지점
+// 	ASSERT (inode != NULL);
+// 	cluster_t target = sector_to_cluster(inode->data.start);
+// 	// 해당 inode 의 data 마지막 지점
+// 	cluster_t tmp = find_chain_end(target);
+// 	static char zeros[DISK_SECTOR_SIZE];
+
+// 	// 만약 inode 의 전체 데이터 길이보다 pos 가 크면, 체인을 이어붙여준다.
+// 	while(pos > inode->data.length) {
+// 		tmp = fat_create_chain(tmp);
+// 		// 해당 영역 0으로 초기화
+// 		disk_write(filesys_disk, cluster_to_sector(tmp), zeros);
+// 		pos -= DISK_SECTOR_SIZE;
+// 	}
+// 	return cluster_to_sector(target);
+// }
 
 /* List of open inodes, so that opening a single inode twice
  * returns the same `struct inode'. */
@@ -75,22 +109,35 @@ inode_create (disk_sector_t sector, off_t length) {
 	 * one sector in size, and you should fix that. */
 	ASSERT (sizeof *disk_inode == DISK_SECTOR_SIZE);
 
+	cluster_t clst;
+
 	disk_inode = calloc (1, sizeof *disk_inode);
 	if (disk_inode != NULL) {
 		size_t sectors = bytes_to_sectors (length);
 		disk_inode->length = length;
 		disk_inode->magic = INODE_MAGIC;
-		if (free_map_allocate (sectors, &disk_inode->start)) {
+		if (clst = fat_create_chain(0)) {
+			// 데이터의 시작지점
+			disk_inode->start = cluster_to_sector(clst);
+
+			// fat 에서 inode 는 항상 EOF
+			// 다만 해당 inode 를 disk sector 에서 찾아서 start 를 읽으면, 해당 inode 의 데이터 영역의 시작을 찾을 수 있음
 			disk_write (filesys_disk, sector, disk_inode);
+
 			if (sectors > 0) {
 				static char zeros[DISK_SECTOR_SIZE];
 				size_t i;
 
-				for (i = 0; i < sectors; i++) 
-					disk_write (filesys_disk, disk_inode->start + i, zeros); 
+				cluster_t tmp = clst;
+
+				disk_write(filesys_disk, cluster_to_sector(tmp), zeros);
+
+				for (i = 1; i < sectors; i++)
+					tmp = fat_create_chain(tmp);
+					disk_write (filesys_disk, cluster_to_sector(tmp), zeros);
 			}
 			success = true; 
-		} 
+		}
 		free (disk_inode);
 	}
 	return success;
@@ -121,10 +168,12 @@ inode_open (disk_sector_t sector) {
 
 	/* Initialize. */
 	list_push_front (&open_inodes, &inode->elem);
+	// inode 는 메모리상에서 추상적으로 관리해주는 자료구조이기 때문에 여기서 명시적으로 초기화해준다.
 	inode->sector = sector;
 	inode->open_cnt = 1;
 	inode->deny_write_cnt = 0;
 	inode->removed = false;
+	// inode->data 는 disk 에 저장되어있는 inode data 이기 때문에 disk_read 를 통해 inode->data 에 담아준다.
 	disk_read (filesys_disk, inode->sector, &inode->data);
 	return inode;
 }
