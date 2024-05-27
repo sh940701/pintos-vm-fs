@@ -168,7 +168,7 @@ void fat_boot_create(void)
 void fat_fs_init(void)
 {
 	/* TODO: Your code goes here. */
-	fat_fs->fat_length = fat_fs->bs.fat_sectors;
+	fat_fs->fat_length = fat_fs->bs.fat_sectors * sizeof(cluster_t) / SECTORS_PER_CLUSTER;
 	fat_fs->data_start = fat_fs->bs.fat_start + fat_fs->bs.fat_sectors;
 }
 
@@ -245,7 +245,14 @@ disk_sector_t
 cluster_to_sector(cluster_t clst)
 {
 	/* TODO: Your code goes here. */
-	return clst * DISK_SECTOR_SIZE;
+	return clst + fat_fs->data_start;
+}
+
+disk_sector_t
+sector_to_cluster(disk_sector_t sector)
+{
+	/* TODO: Your code goes here. */
+	return sector - fat_fs->data_start;
 }
 
 int find_empty_fat()
