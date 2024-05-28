@@ -170,6 +170,7 @@ struct thread
 	int recent_cpu;
 	struct list_elem thread_elem;
 	unsigned magic; /* Detects stack overflow. */
+	struct dir *cwd;
 };
 
 /* for alaram-multiple */

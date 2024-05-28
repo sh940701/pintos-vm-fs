@@ -15,6 +15,7 @@
 #include "filesys/inode.h"
 #include "devices/disk.h"
 #include "threads/palloc.h"
+#include "filesys/directory.h"
 
 /* System call.
  *
@@ -91,6 +92,15 @@ bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
 void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
 void munmap(void *addr);
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir (int fd);
+int inumber (int fd);
+int symlink (const char* target, const char* linkpath);
+int mount (const char *path, int chan_no, int dev_no);
+int umount (const char *path);
+
 
 void syscall_init(void)
 {
@@ -172,6 +182,23 @@ void syscall_handler(struct intr_frame *f)
 	case SYS_MUNMAP:
 		munmap(f->R.rdi);
 		break;
+	/* filesys */
+	case SYS_CHDIR:
+		f->R.rax = chdir (f->R.rdi);
+		break;
+	case SYS_MKDIR:
+		f->R.rax = mkdir (f->R.rdi);
+		break;
+	case SYS_READDIR:
+		f->R.rax = readdir (f->R.rdi, f->R.rsi);
+		break;
+	case SYS_ISDIR:
+		f->R.rax = isdir (f->R.rdi);
+		break;
+	case SYS_INUMBER:
+		f->R.rax = inumber (f->R.rdi);
+		break;
+
 	default:
 		printf("We don't implemented yet.");
 		break;
@@ -730,3 +757,50 @@ void munmap(void *addr)
 
 	do_munmap(addr);
 };
+
+bool
+chdir (const char *dir) {
+	
+}
+
+bool
+mkdir (const char *dir) {
+	return filesys_create_directory(dir);
+}
+
+bool
+readdir (int fd, char name[READDIR_MAX_LEN + 1]) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+
+	if (!inode_is_dir(cur_file->inode)) {
+		return false;
+	}
+
+	return dir_readdir((struct dir*)cur_file, name);
+}
+
+bool
+isdir (int fd) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+
+	return inode_is_dir(cur_file->inode);
+}
+
+int
+inumber (int fd) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+	struct file *cur_file = params.file;
+
+	return inode_get_inumber(cur_file->inode);
+}

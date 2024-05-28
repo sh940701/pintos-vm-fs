@@ -17,7 +17,8 @@ struct inode_disk {
 	disk_sector_t start;                /* First data sector. */
 	off_t length;                       /* File size in bytes. */
 	unsigned magic;                     /* Magic number. */
-	uint32_t unused[125];               /* Not used. */
+	uint32_t is_dir;
+	uint32_t unused[124];               /* Not used. */
 };
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -99,7 +100,7 @@ inode_init (void) {
  * Returns true if successful.
  * Returns false if memory or disk allocation fails. */
 bool
-inode_create (disk_sector_t sector, off_t length) {
+inode_create (disk_sector_t sector, off_t length, uint32_t is_dir) {
 	struct inode_disk *disk_inode = NULL;
 	bool success = false;
 
@@ -116,6 +117,7 @@ inode_create (disk_sector_t sector, off_t length) {
 		size_t sectors = bytes_to_sectors (length);
 		disk_inode->length = length;
 		disk_inode->magic = INODE_MAGIC;
+		disk_inode->is_dir = is_dir;
 		if (clst = fat_create_chain(0)) {
 			// 데이터의 시작지점
 			disk_inode->start = cluster_to_sector(clst);
@@ -359,4 +361,8 @@ inode_allow_write (struct inode *inode) {
 off_t
 inode_length (const struct inode *inode) {
 	return inode->data.length;
+}
+
+bool inode_is_dir(struct inode *inode) {
+	return inode->data.is_dir;
 }
